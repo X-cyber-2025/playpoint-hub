@@ -395,30 +395,46 @@ bot.on("message", async msg => {
       return bot.sendMessage(uid, `Request #${priceRequest.id}-এর দাম পাঠানো হয়েছে: ${fmt(amount)}`);
     }
 
-    // Admin Balance Lookup Step
+    // Admin Balance Lookup Step (ID বা Username দিয়ে)
     if (session?.step === "balance_lookup" && isAdmin(uid)) {
-      const target = Number(text);
       sessions.delete(uid);
-      if (!Number.isSafeInteger(target) || target <= 0) return bot.sendMessage(uid, "সঠিক numeric Telegram user ID দিন। (ইউজারনেম নয়)");
-      const targetUser = db.prepare("SELECT id FROM users WHERE id=?").get(target);
-      return bot.sendMessage(uid, targetUser ? `User ID: ${target}\nBalance: ${fmt(balanceOf(target))}` : "এই ইউজার এখনও বটে /start করেনি।");
-    }
+      let targetId = Number(text);
+      let targetUser;
 
-    // Admin Adjust User ID Step
-    if (session?.step === "admin_adjust_uid" && isAdmin(uid)) {
-      const target = Number(text);
-      if (!Number.isSafeInteger(target) || target <= 0) return bot.sendMessage(uid, "সঠিক numeric Telegram user ID দিন। (ইউজারনেম নয়)");
-      
-      const targetUser = db.prepare("SELECT id FROM users WHERE id=?").get(target);
-      if (!targetUser) {
-        sessions.delete(uid);
-        return bot.sendMessage(uid, "এই ইউজার এখনও বটে /start করেনি।");
+      if (Number.isSafeInteger(targetId) && targetId > 0) {
+        targetUser = db.prepare("SELECT id FROM users WHERE id=?").get(targetId);
+      } else {
+        const uname = text.replace(/^@/, '');
+        targetUser = db.prepare("SELECT id FROM users WHERE username=?").get(uname);
+        if (targetUser) targetId = targetUser.id;
       }
 
-      session.targetUid = target;
+      if (!targetUser) return bot.sendMessage(uid, "❌ এই নাম্বার বা ইউজারনেমে কোনো ইউজার পাওয়া যায়নি।");
+      return bot.sendMessage(uid, `User ID: ${targetId}\nBalance: ${fmt(balanceOf(targetId))}`);
+    }
+
+    // Admin Adjust User ID Step (ID বা Username দিয়ে)
+    if (session?.step === "admin_adjust_uid" && isAdmin(uid)) {
+      let targetId = Number(text);
+      let targetUser;
+
+      if (Number.isSafeInteger(targetId) && targetId > 0) {
+        targetUser = db.prepare("SELECT id FROM users WHERE id=?").get(targetId);
+      } else {
+        const uname = text.replace(/^@/, '');
+        targetUser = db.prepare("SELECT id FROM users WHERE username=?").get(uname);
+        if (targetUser) targetId = targetUser.id;
+      }
+      
+      if (!targetUser) {
+        sessions.delete(uid);
+        return bot.sendMessage(uid, "❌ এই নাম্বার বা ইউজারনেমে কোনো ইউজার পাওয়া যায়নি।");
+      }
+
+      session.targetUid = targetId;
       session.step = "admin_adjust_amount";
       
-      return bot.sendMessage(uid, `ইউজারের বর্তমান ব্যালেন্স: ${fmt(balanceOf(target))}\n\nকত টাকা যোগ বা বিয়োগ করতে চান? (বিয়োগ করতে চাইলে সামনে মাইনাস চিহ্ন দিন)\nউদাহরণ: 500 অথবা -500`);
+      return bot.sendMessage(uid, `ইউজারের বর্তমান ব্যালেন্স: ${fmt(balanceOf(targetId))}\n\nকত টাকা যোগ বা বিয়োগ করতে চান? (বিয়োগ করতে চাইলে সামনে মাইনাস চিহ্ন দিন)\nউদাহরণ: 500 অথবা -500`);
     }
 
     // Admin Adjust Amount Step
@@ -669,12 +685,12 @@ bot.on("callback_query", async query => {
 
       if (type === "balance") {
         sessions.set(uid, { step: "balance_lookup" });
-        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স দেখতে চান তার numeric Telegram user ID দিন। (ইউজারনেম নয়)");
+        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স দেখতে চান তার numeric Telegram user ID অথবা @username দিন।");
       }
 
       if (type === "adjust") {
         sessions.set(uid, { step: "admin_adjust_uid" });
-        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স পরিবর্তন করতে চান তার numeric Telegram user ID দিন। (ইউজারনেম নয়)");
+        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স পরিবর্তন করতে চান তার numeric Telegram user ID অথবা @username দিন।");
       }
 
       if (type === "deposits") {
