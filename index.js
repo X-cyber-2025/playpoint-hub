@@ -7,6 +7,7 @@ const Database = require("better-sqlite3");
 
 const { BOT_TOKEN, ADMIN_CHAT_ID, SUPPORT_USERNAME = "", BKASH_NUMBER = "", NAGAD_NUMBER = "" } = process.env;
 const ADMIN_ID = Number(ADMIN_CHAT_ID);
+const REQUIRED_CHANNEL = "@google_play_point_01"; // গ্রুপ জয়েন এর জন্য
 
 if (!BOT_TOKEN || !Number.isSafeInteger(ADMIN_ID) || ADMIN_ID <= 0) {
   console.error("ERROR: Set BOT_TOKEN and numeric ADMIN_CHAT_ID in .env");
@@ -134,7 +135,30 @@ function sendAdmin(text, reply_markup) {
   });
 }
 
-// মেনু বাটন আপডেট করা হয়েছে (Quest Complete যুক্ত)
+// ================= Force Join Function =================
+async function checkMembership(userId) {
+  if (isAdmin(userId)) return true; // অ্যাডমিনকে জয়েন করতে হবে না
+  try {
+    const member = await bot.getChatMember(REQUIRED_CHANNEL, userId);
+    return ['member', 'administrator', 'creator'].includes(member.status);
+  } catch (err) {
+    console.error("Membership check error:", err.message);
+    return false; 
+  }
+}
+
+function sendJoinPrompt(chatId) {
+  return bot.sendMessage(chatId, "⚠️ বট ব্যবহার করতে হলে আপনাকে আমাদের চ্যানেলে জয়েন করতে হবে।\n\nনিচের বাটনে ক্লিক করে জয়েন করুন, তারপর 'Check Again' এ ক্লিক করুন।", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📢 Join Channel", url: "https://t.me/google_play_point_01" }],
+        [{ text: "✅ Check Again", callback_data: "check_join" }]
+      ]
+    }
+  });
+}
+// =======================================================
+
 const home = {
   reply_markup: {
     keyboard: [
@@ -170,7 +194,8 @@ function adminPanel(chatId) {
         [{ text: "Pending price requests", callback_data: "list:prices" }],
         [{ text: "Pending orders", callback_data: "list:orders" }],
         [{ text: "Pending Quests", callback_data: "list:quests" }],
-        [{ text: "Check user balance", callback_data: "list:balance" }]
+        [{ text: "Check user balance", callback_data: "list:balance" }],
+        [{ text: "⚙️ Adjust User Balance", callback_data: "list:adjust" }]
       ]
     }
   });
@@ -184,16 +209,22 @@ function parseMoney(text) {
 }
 
 // ===== Commands =====
-bot.onText(/^\/start(@\w+)?$/, msg => {
+bot.onText(/^\/start(@\w+)?$/, async msg => {
   if (!msg.from?.id) return;
+  const uid = msg.from.id;
+  
+  // গ্রুপ জয়েন চেক
+  const isJoined = await checkMembership(uid);
+  if (!isJoined) return sendJoinPrompt(uid);
+
   ensureUser(msg.from);
-  sessions.delete(msg.from.id);
+  sessions.delete(uid); // বট রিস্টার্ট (সব স্টেট ক্লিয়ার)
 
   bot.sendMessage(
     msg.chat.id,
     `আসসালামু আলাইকুম, ${esc(msg.from.first_name || "বন্ধু")}!\n\n` +
-    `<b>PLAY POINT QUEST HUB</b>\n💰 আপনার ব্যালেন্স: <b>${fmt(balanceOf(msg.from.id))}</b>\n\n` +
-    `COD Coupon কেনার আগে Admin-এর কাছ থেকে বর্তমান BDT দাম নিশ্চিত করুন।`,
+    `<b>PLAY POINT QUEST HUB</b>\n💰 আপনার ব্যালেন্স: <b>${fmt(balanceOf(uid))}</b>\n\n` +
+    `বট রিস্টার্ট হয়েছে। নিচের মেনু থেকে আপনার প্রয়োজনীয় কাজ বেছে নিন।`,
     { parse_mode: "HTML", ...home }
   );
 });
@@ -216,10 +247,15 @@ bot.on("message", async msg => {
 
   const uid = msg.from.id;
   const text = msg.text ? msg.text.trim() : "";
-  ensureUser(msg.from);
-  const session = sessions.get(uid);
 
   try {
+    // গ্রুপ জয়েন চেক (মেসেজ পাঠানোর আগে)
+    const isJoined = await checkMembership(uid);
+    if (!isJoined) return sendJoinPrompt(uid);
+
+    ensureUser(msg.from);
+    const session = sessions.get(uid);
+
     // ১. ছবি বা স্ক্রিনশট হ্যান্ডলার (Quest-এর জন্য)
     if (msg.photo) {
       if (session?.step === "quest_screenshot") {
@@ -228,7 +264,7 @@ bot.on("message", async msg => {
         session.step = "quest_username";
         return bot.sendMessage(uid, "✅ স্ক্রিনশট গ্রহণ করা হয়েছে।\n\nএখন আপনার গেমের/অ্যাকাউন্টের ইউজারনেম দিন।");
       }
-      return; // অন্য কোনো অপ্রয়োজনীয় ছবি ইগনোর করুন
+      return; 
     }
 
     if (!msg.text || msg.text.startsWith("/")) return;
@@ -237,9 +273,7 @@ bot.on("message", async msg => {
     if (MENU_BUTTONS.has(text)) {
       sessions.delete(uid);
       
-      if (text === "💰 My Balance") {
-        return bot.sendMessage(uid, `💰 আপনার ব্যালেন্স: ${fmt(balanceOf(uid))}`, home);
-      }
+      if (text === "💰 My Balance") return bot.sendMessage(uid, `💰 আপনার ব্যালেন্স: ${fmt(balanceOf(uid))}`, home);
       
       if (text === "➕ Add Balance") {
         return bot.sendMessage(uid, "পেমেন্টের মাধ্যম বেছে নিন। টাকা পাঠানোর নম্বর নিচে দেওয়া আছে।", {
@@ -257,9 +291,7 @@ bot.on("message", async msg => {
         return bot.sendMessage(uid, "🎯 <b>Quest Complete</b>\n\nকুইস্ট সম্পন্ন করতে ১০৳ ফি দিতে হবে।\n\nঅ্যাডমিনের bKash/Nagad নম্বরে ১০৳ পাঠিয়ে পেমেন্টের স্ক্রিনশট এখানে পাঠান।", { parse_mode: "HTML" });
       }
       
-      if (text === "🎮 COD Coupons") {
-        return bot.sendMessage(uid, "আপনার পছন্দের Coupon নির্বাচন করুন।", couponMenu);
-      }
+      if (text === "🎮 COD Coupons") return bot.sendMessage(uid, "আপনার পছন্দের Coupon নির্বাচন করুন।", couponMenu);
       
       if (text === "📜 Transactions") {
         const rows = db.prepare(`SELECT type, amount, ref, note, created_at FROM transactions WHERE uid=? ORDER BY id DESC LIMIT 10`).all(uid);
@@ -368,10 +400,63 @@ bot.on("message", async msg => {
     if (session?.step === "balance_lookup" && isAdmin(uid)) {
       const target = Number(text);
       sessions.delete(uid);
-      if (!Number.isSafeInteger(target) || target <= 0) return bot.sendMessage(uid, "সঠিক numeric Telegram user ID দিন।");
+      if (!Number.isSafeInteger(target) || target <= 0) return bot.sendMessage(uid, "সঠিক numeric Telegram user ID দিন। (ইউজারনেম নয়, শুধু নাম্বার দিন)");
       const targetUser = db.prepare("SELECT id FROM users WHERE id=?").get(target);
       return bot.sendMessage(uid, targetUser ? `User ID: ${target}\nBalance: ${fmt(balanceOf(target))}` : "এই ইউজার এখনও বটে /start করেনি।");
     }
+
+    // ৭. অ্যাডমিন - ব্যালেন্স অ্যাডজাস্ট (ইউজার আইডি)
+    if (session?.step === "admin_adjust_uid" && isAdmin(uid)) {
+      const target = Number(text);
+      if (!Number.isSafeInteger(target) || target <= 0) return bot.sendMessage(uid, "সঠিক numeric Telegram user ID দিন। (ইউজারনেম নয়, শুধু নাম্বার দিন)");
+      
+      const targetUser = db.prepare("SELECT id FROM users WHERE id=?").get(target);
+      if (!targetUser) {
+        sessions.delete(uid);
+        return bot.sendMessage(uid, "এই ইউজার এখনও বটে /start করেনি।");
+      }
+
+      session.targetUid = target;
+      session.step = "admin_adjust_amount";
+      
+      return bot.sendMessage(uid, `ইউজারের বর্তমান ব্যালেন্স: ${fmt(balanceOf(target))}\n\nকত টাকা যোগ বা বিয়োগ করতে চান? (বিয়োগ করতে চাইলে সামনে মাইনাস চিহ্ন দিন)\nউদাহরণ: 500 অথবা -500`);
+    }
+
+    // ৮. অ্যাডমিন - ব্যালেন্স অ্যাডজাস্ট (অ্যামাউন্ট)
+    if (session?.step === "admin_adjust_amount" && isAdmin(uid)) {
+      if (!/^-?\d{1,6}(\.\d{1,2})?$/.test(text)) {
+        return bot.sendMessage(uid, "সঠিক পরিমাণ লিখুন। উদাহরণ: 500 অথবা -500");
+      }
+      const amount = toPaisa(Number(text));
+      const target = session.targetUid;
+
+      const result = db.transaction(() => {
+        const currentBal = balanceOf(target);
+        const newBal = currentBal + amount;
+        
+        if (newBal < 0) return { error: "NEGATIVE" };
+
+        db.prepare("UPDATE users SET balance=? WHERE id=?").run(newBal, target);
+        db.prepare(`INSERT INTO transactions(uid,type,amount,ref,note) VALUES(?,?,?,?,?)`).run(
+          target,
+          "ADJUSTMENT",
+          amount,
+          `ADJ-${Date.now()}`,
+          `Admin adjustment`
+        );
+        return { success: true, newBal };
+      })();
+
+      if (result.error === "NEGATIVE") {
+        sessions.delete(uid);
+        return bot.sendMessage(uid, "❌ এই পরিমাণ বিয়োগ করা যাবে না, কারণ ব্যালেন্স ০ এর নিচে নেমে যাবে।");
+      }
+
+      sessions.delete(uid);
+      await bot.sendMessage(uid, `✅ ইউজার ${target} এর ব্যালেন্স আপডেট করা হয়েছে।\nনতুন ব্যালেন্স: ${fmt(result.newBal)}`);
+      return safeNotify(target, `⚠️ অ্যাডমিন আপনার ব্যালেন্সে পরিবর্তন করেছেন।\nনতুন ব্যালেন্স: ${fmt(result.newBal)}`);
+    }
+
   } catch (error) {
     console.error("Message handler error:", error);
     try { await bot.sendMessage(uid, "⚠️ একটি সমস্যা হয়েছে। আবার চেষ্টা করুন অথবা Admin-কে জানান।"); } catch {}
@@ -388,6 +473,22 @@ bot.on("callback_query", async query => {
     bot.answerCallbackQuery(query.id, { ...(text ? { text } : {}), show_alert: alert }).catch(() => {});
 
   try {
+    // Join Check (Check Again বাটন ছাড়া বাকি সব কিছুর জন্য)
+    if (data !== "check_join") {
+      const isJoined = await checkMembership(uid);
+      if (!isJoined) return sendJoinPrompt(uid);
+    }
+
+    if (data === "check_join") {
+      const isJoined = await checkMembership(uid);
+      if (isJoined) {
+        await answer("✅ ধন্যবাদ! আপনি সফলভাবে জয়েন করেছেন।");
+        return bot.sendMessage(uid, "বটে স্বাগতম! এখন আপনি সব ফিচার ব্যবহার করতে পারবেন। /start দিন।", home);
+      } else {
+        return answer("❌ আপনি এখনও জয়েন করেননি। দয়া করে জয়েন করুন।", true);
+      }
+    }
+
     ensureUser(query.from);
 
     if (data.startsWith("deposit:method:")) {
@@ -571,7 +672,12 @@ bot.on("callback_query", async query => {
 
       if (type === "balance") {
         sessions.set(uid, { step: "balance_lookup" });
-        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স দেখতে চান তার numeric Telegram user ID দিন।");
+        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স দেখতে চান তার numeric Telegram user ID দিন। (ইউজারনেম নয়)");
+      }
+
+      if (type === "adjust") {
+        sessions.set(uid, { step: "admin_adjust_uid" });
+        return bot.sendMessage(uid, "যে ইউজারের ব্যালেন্স পরিবর্তন (যোগ/বিয়োগ) করতে চান তার numeric Telegram user ID দিন। (ইউজারনেম নয়)");
       }
 
       if (type === "deposits") {
@@ -636,7 +742,7 @@ bot.getMe().then((botInfo) => {
     `✅ <b>বট সফলভাবে কানেক্ট হয়েছে!</b>\n\n` +
     `🤖 বটের নাম: ${botInfo.first_name}\n` +
     `🔗 ইউজারনেম: @${botInfo.username}\n\n` +
-    `আপনার বট এখন সম্পূর্ণ প্রস্তুত। ইউজাররা এখন কাজ শুরু করতে পারবে।`, 
+    `আপনার বট এখন সম্পূর্ণ প্রস্তুত।`, 
     { parse_mode: "HTML" }
   ).catch(err => console.error("Admin notification failed:", err.message));
 
