@@ -1,1 +1,17 @@
-
+{
+  "name": "play-point-quest-hub",
+  "version": "2.1.0",
+  "description": "Telegram bot for Play Point Quest Hub",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^16.4.7",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
