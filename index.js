@@ -1,4 +1,4 @@
-// PLAY POINT QUEST HUB — Premium Stylized Bot Code
+// PLAY POINT QUEST HUB — Ultimate Updated Code
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -232,7 +232,7 @@ async function handleStart(msg) {
   ensureUser(msg.from);
   sessions.delete(uid);
   
-  bot.deleteMessage(uid, msg.message_id).catch(() => {});
+  if (msg.message_id) bot.deleteMessage(uid, msg.message_id).catch(() => {});
 
   const startText = `🌟 <b>আসসালামু আলাইকুম, ${esc(msg.from.first_name || "বন্ধু")}!</b> 🌟\n\n` +
     `✨ <b>Play Point Quest Hub</b>-এ আপনাকে স্বাগতম!\n` +
@@ -245,12 +245,15 @@ async function handleStart(msg) {
 }
 
 bot.onText(/^\/start(@\w+)?$/, handleStart);
+bot.onText(/^\/menu(@\w+)?$/, handleStart);
+
 bot.onText(/^\/admin(@\w+)?$/, msg => {
   if (isAdmin(msg.from.id)) {
     bot.deleteMessage(msg.from.id, msg.message_id).catch(() => {});
     return adminPanel(msg.chat.id);
   }
 });
+
 bot.onText(/^\/cancel(@\w+)?$/, msg => {
   bot.deleteMessage(msg.from.id, msg.message_id).catch(() => {});
   sessions.delete(msg.from.id);
@@ -272,6 +275,26 @@ bot.on("message", async msg => {
     
     ensureUser(msg.from);
     const session = sessions.get(uid);
+
+    // --- ONE-CLICK BROADCAST FOR ADMIN ---
+    if (text.startsWith("/broadcast ") && isAdmin(uid)) {
+      const bMsg = text.slice(11);
+      if (!bMsg) return bot.sendMessage(uid, "⚠️ মেসেজটি খালি। ব্যবহার: <code>/broadcast আপনার মেসেজ</code>", { parse_mode: "HTML" });
+      
+      const users = db.prepare("SELECT id FROM users WHERE is_banned=0").all();
+      const notif = await bot.sendMessage(uid, `⏳ <b>${users.length} জন ইউজারকে মেসেজ পাঠানো হচ্ছে...</b>`, { parse_mode: "HTML" });
+      
+      let count = 0;
+      for (const u of users) {
+        try {
+          await bot.sendMessage(u.id, bMsg, { parse_mode: "HTML", ...getHome(u.id) });
+          count++;
+          await new Promise(r => setTimeout(r, 50)); // Delay to avoid Telegram flood limits
+        } catch (e) {}
+      }
+      bot.deleteMessage(uid, notif.message_id).catch(() => {});
+      return bot.sendMessage(uid, `✅ <b>সফলভাবে ${count} জনকে মেসেজ পাঠানো হয়েছে।</b>`, { parse_mode: "HTML" });
+    }
 
     // Photo Handler
     if (msg.photo) {
@@ -303,7 +326,7 @@ bot.on("message", async msg => {
     if (!msg.text) return;
 
     // Handle "Start / Restart" from keyboard
-    if (text === "🚀 Start / Restart" || text === "🔄 Restart Bot" || text.toLowerCase() === "start") {
+    if (text === "🚀 Start / Restart" || text === "🔄 Restart Bot" || text.toLowerCase() === "start" || text.toLowerCase() === "menu") {
       return handleStart(msg);
     }
 
@@ -330,7 +353,7 @@ bot.on("message", async msg => {
       }
       if (text === "🎯 Quest Complete") {
         sessions.set(uid, { step: "quest_screenshot" });
-        return bot.sendMessage(uid, "🎯 <b>QUEST COMPLETE</b>\n\nকুইস্ট সম্পন্ন করতে ১০৳ ফি দিতে হবে।\n\n📸 অ্যাডমিনের নম্বরে ১০৳ পাঠিয়ে পেমেন্টের স্ক্রিনশট এখানে পাঠান।", { parse_mode: "HTML" });
+        return bot.sendMessage(uid, "🎯 <b>QUEST COMPLETE</b>\n\nকুইস্ট সম্পন্ন করতে ১০৳ ফি দিতে হবে।\n\n📸 অ্যাডমিনের নম্বরে ১০৳ পাঠিয়ে পেমেন্টের স্ক্রিনশট এখানে পাঠান।\n\n❌ <i>বাতিল করতে /cancel লিখুন।</i>", { parse_mode: "HTML" });
       }
       if (text === "🎮 COD Coupons") {
         return bot.sendMessage(uid, "🎮 <b>COD COUPONS</b>\n\n<i>আপনি কী করতে চান?</i>", {
@@ -603,13 +626,13 @@ bot.on("message", async msg => {
         .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
     }
 
-    // --- Broadcast ---
+    // --- Broadcast (Inline button) ---
     if (session?.step === "broadcast_msg" && isAdmin(uid)) {
       const users = db.prepare("SELECT id FROM users WHERE is_banned=0").all();
       let count = 0;
       let notif = await bot.sendMessage(uid, `⏳ <b>${users.length} জনকে পাঠানো হচ্ছে...</b>`, { parse_mode: "HTML" });
       for (const u of users) {
-        const ok = await safeNotify(u.id, text, { parse_mode: "HTML" });
+        const ok = await safeNotify(u.id, text, { parse_mode: "HTML", ...getHome(u.id) });
         if (ok) count++;
         await new Promise(r => setTimeout(r, 50));
       }
@@ -1117,7 +1140,7 @@ bot.on("callback_query", async query => {
     }
     if (data === "admin:broadcast") {
       sessions.set(uid, { step: "broadcast_msg" }); await answer(); deleteMsg();
-      return bot.sendMessage(uid, "📣 <b>Broadcast Message</b>\n\n<i>সব ইউজারকে যে মেসেজটি পাঠাতে চান সেটি লিখুন (বাতিল: /cancel):</i>", { parse_mode: "HTML" });
+      return bot.sendMessage(uid, "📣 <b>Broadcast Message</b>\n\n<i>সব ইউজারকে যে মেসেজটি পাঠাতে চান সেটি লিখুন (বাতিল: /cancel):</i>\n\n💡 <i>টিপস: সরাসরি চ্যাটে <code>/broadcast আপনার মেসেজ</code> লিখেও পাঠাতে পারেন।</i>", { parse_mode: "HTML" });
     }
     if (data === "list:users") {
       const users = db.prepare("SELECT id, name, username, balance FROM users ORDER BY id DESC LIMIT 20").all();
@@ -1350,7 +1373,7 @@ bot.on("callback_query", async query => {
   } catch (error) { console.error("Callback Error:", error); answer("Error", true); }
 });
 
-// ===== Error Handling & Bot Startup Broadcast =====
+// ===== Error Handling & Bot Startup =====
 bot.on("polling_error", e => console.error("Polling error:", e?.message || e));
 
 bot.getMe().then(async (info) => {
@@ -1358,22 +1381,17 @@ bot.getMe().then(async (info) => {
   
   const adminMsg = `🚀 <b>বট সফলভাবে আপডেট হয়েছে!</b>\n\n` +
     `✨ <b>নতুন আপডেট:</b>\n` +
-    `• 🎨 সম্পূর্ণ নতুন প্রিমিয়াম ও স্টাইলিশ ডিজাইন\n` +
-    `• 🚀 Start / Restart বাটন\n` +
-    `• 🇺🇸 USA Fake Address\n` +
-    `• 💳 Card Make (13 ডিজিট BIN সাপোর্ট)\n` +
-    `• ⚡ দ্রুত পারফরম্যান্স\n\n` +
+    `• 🚀 ইউজারকে আর /start লিখতে হবে না, যেকোনো মেসেজে মেইন মেনু আসবে।\n` +
+    `• 📣 এক ক্লিকে সবার কাছে মেসেজ পাঠানোর জন্য নতুন কমান্ড: <code>/broadcast আপনার মেসেজ</code>\n\n` +
     `⏳ সমস্ত ইউজারকে নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000));
 
-  // Broadcast to all users on restart
   const users = db.prepare("SELECT id FROM users").all();
   const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
-    `✨ <b>নতুন যা যা যুক্ত হয়েছে:</b>\n` +
-    `• 🇺🇸 USA Fake Address মেনু\n` +
-    `• 🎨 সম্পূর্ণ নতুন ও আকর্ষণীয় ডিজাইন\n` +
-    `• ⚡ বট এখন আগের চেয়ে দ্রুত\n\n` +
+    `✨ <b>নতুন সুবিধা:</b>\n` +
+    `• এখন আর বার বার /start লিখতে হবে না!\n` +
+    `• যেকোনো টেক্সট লিখলেই মেইন মেনু চলে আসবে।\n\n` +
     `👇 <i>যেকোনো সমস্যায় 🚀 Start / Restart চাপুন।</i>`;
 
   let count = 0;
