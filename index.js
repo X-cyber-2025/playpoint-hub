@@ -56,15 +56,9 @@ CREATE TABLE IF NOT EXISTS master_cards (
   status TEXT NOT NULL DEFAULT 'AVAILABLE' CHECK(status IN ('AVAILABLE','CLAIMED')), claimed_by INTEGER, claimed_at TEXT,
   added_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(claimed_by) REFERENCES users(id)
 );
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY, value TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS admin_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS support_tickets (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, message TEXT, reply TEXT, status TEXT DEFAULT 'OPEN', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, replied_at TEXT
-);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS admin_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS support_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER, message TEXT, reply TEXT, status TEXT DEFAULT 'OPEN', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, replied_at TEXT);
 `);
 
 // ===== Database Migrations =====
@@ -97,27 +91,33 @@ function ensureUser(user) {
 }
 async function safeNotify(chatId, text, options) {
   try { await bot.sendMessage(chatId, text, options); return true; }
-  catch (err) { console.error(`Notify ${chatId} failed:`, err.message); return false; }
+  catch (err) { return false; }
 }
 function sendAdmin(text, reply_markup) {
   return safeNotify(ADMIN_ID, text, { parse_mode: "HTML", ...(reply_markup ? { reply_markup } : {}) });
 }
+
+// ✅ নতুন: এক এক করে মেসেজ ডিলিট করার এনিমেশন ফাংশন
+async function sequentialDelete(chatId, msgIds, delay = 300) {
+  if (!Array.isArray(msgIds)) msgIds = [msgIds];
+  for (let i = 0; i < msgIds.length; i++) {
+    if (msgIds[i]) {
+      await bot.deleteMessage(chatId, msgIds[i]).catch(() => {});
+      if (i < msgIds.length - 1) await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
+async function editAndAutoDelete(chatId, messageId, newText, delayMs = 5000, editOptions = {}) {
+  try { await bot.editMessageText(newText, { chat_id: chatId, message_id: messageId, parse_mode: "HTML", ...editOptions }); } catch (e) {}
+  setTimeout(() => { bot.deleteMessage(chatId, messageId).catch(() => {}); }, delayMs);
+}
+
 function parseMoney(text) {
   if (!/^\d{1,6}(\.\d{1,2})?$/.test(text)) return null;
   const v = Number(text);
   if (!Number.isFinite(v) || v <= 0 || v > 100000) return null;
   return toPaisa(v);
-}
-
-// Auto Delete Logic (5 seconds)
-async function editAndAutoDelete(chatId, messageId, newText, delayMs = 5000, editOptions = {}) {
-  try {
-    await bot.editMessageText(newText, { chat_id: chatId, message_id: messageId, parse_mode: "HTML", ...editOptions });
-  } catch (e) {}
-  setTimeout(() => { bot.deleteMessage(chatId, messageId).catch(() => {}); }, delayMs);
-}
-async function autoDeleteMsg(chatId, messageId, delayMs = 5000) {
-  setTimeout(() => { bot.deleteMessage(chatId, messageId).catch(() => {}); }, delayMs);
 }
 
 // ===== Force Join =====
@@ -170,16 +170,24 @@ bot.onText(/^\/start(@\w+)?$/, async msg => {
 
   ensureUser(msg.from);
   sessions.delete(uid);
+  
+  // ✅ কমান্ড মেসেজটি ডিলিট করা হবে
+  bot.deleteMessage(uid, msg.message_id).catch(() => {});
+
   bot.sendMessage(msg.chat.id, `আসসালামু আলাইকুম, ${esc(msg.from.first_name || "বন্ধু")}!\n\n💰 আপনার ব্যালেন্স: <b>${fmt(balanceOf(uid))}</b>`, { parse_mode: "HTML", ...getHome(uid) });
 });
 
 bot.onText(/^\/admin(@\w+)?$/, msg => {
-  if (isAdmin(msg.from.id)) return adminPanel(msg.chat.id);
+  if (isAdmin(msg.from.id)) {
+    bot.deleteMessage(msg.from.id, msg.message_id).catch(() => {});
+    return adminPanel(msg.chat.id);
+  }
 });
 
 bot.onText(/^\/cancel(@\w+)?$/, msg => {
+  bot.deleteMessage(msg.from.id, msg.message_id).catch(() => {});
   sessions.delete(msg.from.id);
-  bot.sendMessage(msg.from.id, "প্রক্রিয়াটি বাতিল হয়েছে।", getHome(msg.from.id));
+  bot.sendMessage(msg.from.id, "প্রক্রিয়াটি বাতিল হয়েছে।", getHome(msg.from.id)).then(m => sequentialDelete(msg.from.id, m.message_id, 3000));
 });
 
 // ===== Message Handler =====
@@ -218,21 +226,29 @@ bot.on("message", async msg => {
         await bot.sendPhoto(session.targetUid, fileId, { caption: "💬 Admin-এর রিপ্লাই" });
         db.prepare("UPDATE support_tickets SET status='CLOSED', reply=? WHERE uid=? AND status='OPEN'").run(`[Photo] ${fileId}`, session.targetUid);
         sessions.delete(uid);
-        return bot.sendMessage(uid, "✅ রিপ্লাই পাঠানো হয়েছে।").then(m => autoDeleteMsg(uid, m.message_id));
+        return bot.sendMessage(uid, "✅ রিপ্লাই পাঠানো হয়েছে।");
       }
       return;
     }
 
     if (!msg.text || msg.text.startsWith("/")) return;
 
+    // ✅ ইউজারের পাঠানো মেসেজ ডিলিট (মেনু বাটন ছাড়া)
+    if (!MENU_BUTTONS.has(text)) {
+      bot.deleteMessage(uid, msg.message_id).catch(() => {});
+    }
+
     // Menu Buttons
     if (MENU_BUTTONS.has(text)) {
       sessions.delete(uid);
       if (text === "🛠 Admin Menu") { if (isAdmin(uid)) return adminPanel(uid); return; }
-      if (text === "🔄 Restart Bot") return bot.sendMessage(uid, `🔄 রিস্টার্ট হয়েছে।\n💰 ব্যালেন্স: ${fmt(balanceOf(uid))}`, getHome(uid));
-      if (text === "💰 My Balance") return bot.sendMessage(uid, `💰 আপনার ব্যালেন্স: ${fmt(balanceOf(uid))}`, getHome(uid));
+      if (text === "🔄 Restart Bot") {
+        return bot.sendMessage(uid, `🔄 রিস্টার্ট হয়েছে।\n💰 ব্যালেন্স: ${fmt(balanceOf(uid))}`, getHome(uid))
+          .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000)); // ৫ সেকেন্ড পর ডিলিট
+      }
+      if (text === "💰 My Balance") return bot.sendMessage(uid, `💰 আপনার ব্যালেন্স: ${fmt(balanceOf(uid))}`, getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
       if (text === "➕ Add Balance") {
-        return bot.sendMessage(uid, "পেমেন্টের মাধ্যম বেছে নিন।", { reply_markup: { inline_keyboard: [[{ text: "bKash", callback_data: "deposit:method:bKash" }], [{ text: "Nagad", callback_data: "deposit:method:Nagad" }]] }});
+        return bot.sendMessage(uid, "পেমেন্টের মাধ্যম বেছে নিন।", { reply_markup: { inline_keyboard: [[{ text: "bKash", callback_data: "deposit:method:bKash" }], [{ text: "Nagad", callback_data: "deposit:method:Nagad" }]] } });
       }
       if (text === "🎯 Quest Complete") {
         sessions.set(uid, { step: "quest_screenshot" });
@@ -240,9 +256,9 @@ bot.on("message", async msg => {
       }
       if (text === "🎁 Free Master Card") {
         const claimed = db.prepare("SELECT * FROM master_cards WHERE claimed_by=? ORDER BY claimed_at DESC LIMIT 1").get(uid);
-        if (claimed) return bot.sendMessage(uid, `🎁 আপনি ইতিমধ্যে কার্ড নিয়েছেন:\n🎫 <code>${esc(claimed.card_code)}</code>`, { parse_mode: "HTML", ...getHome(uid) });
+        if (claimed) return bot.sendMessage(uid, `🎁 আপনি ইতিমধ্যে কার্ড নিয়েছেন:\n🎫 <code>${esc(claimed.card_code)}</code>`, { parse_mode: "HTML", ...getHome(uid) }).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 10000));
         const avail = db.prepare("SELECT COUNT(*) AS c FROM master_cards WHERE status='AVAILABLE'").get();
-        if (!avail.c) return bot.sendMessage(uid, "😔 স্টকে কার্ড নেই।", getHome(uid));
+        if (!avail.c) return bot.sendMessage(uid, "😔 স্টকে কার্ড নেই।", getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
 
         const result = db.transaction(() => {
           const card = db.prepare("SELECT * FROM master_cards WHERE status='AVAILABLE' ORDER BY id LIMIT 1").get();
@@ -254,12 +270,12 @@ bot.on("message", async msg => {
         return bot.sendMessage(uid, `🎉 <b>অভিনন্দন!</b>\n\n🎫 কার্ড: <code>${esc(result.card.card_code)}</code>\n${result.card.note ? `📝 নোট: ${esc(result.card.note)}` : ''}`, { parse_mode: "HTML", ...getHome(uid) });
       }
       if (text === "🎮 COD Coupons") {
-        const menu = { reply_markup: { inline_keyboard: [[{ text: "$4 Coupon", callback_data: "coupon:4" }, { text: "$5 Coupon", callback_data: "coupon:5" }], [{ text: "$10 Coupon", callback_data: "coupon:10" }, { text: "$20 Coupon", callback_data: "coupon:20" }], [{ text: "$25 Coupon", callback_data: "coupon:25" }]] } };
+        const menu = { reply_markup: { inline_keyboard: [[{ text: "$4 Coupon", callback_data: "coupon:4" }, { text: "$5 Coupon", callback_data: "coupon:5" }], [{ text: "$10 Coupon", callback_data: "coupon:10" }, { text: "$20 Coupon", callback_data: "coupon:20" }], [{ text: "$25 Coupon", callback_data: "coupon:25" }], [{ text: "❌ Close", callback_data: "msg:delete" }]] } };
         return bot.sendMessage(uid, "আপনার পছন্দের Coupon নির্বাচন করুন।", menu);
       }
       if (text === "📜 Transactions") {
         const rows = db.prepare(`SELECT type, amount, note, created_at FROM transactions WHERE uid=? ORDER BY id DESC LIMIT 10`).all(uid);
-        if (!rows.length) return bot.sendMessage(uid, "কোনো Transaction নেই।", getHome(uid));
+        if (!rows.length) return bot.sendMessage(uid, "কোনো Transaction নেই।", getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
         const lines = rows.map(r => `${r.type}: ${fmt(r.amount)}\n${r.note}\n${r.created_at}`);
         return bot.sendMessage(uid, `📜 <b>Transactions</b>\n\n${lines.join("\n\n")}`, { parse_mode: "HTML", ...getHome(uid) });
       }
@@ -275,26 +291,32 @@ bot.on("message", async msg => {
     // --- Deposit Steps ---
     if (session?.step === "deposit_amount") {
       const amount = parseMoney(text);
-      if (!amount || amount < 1000) return bot.sendMessage(uid, "সঠিক পরিমাণ লিখুন (মিনিমাম ১০৳)।");
+      if (!amount || amount < 1000) {
+         return bot.sendMessage(uid, "সঠিক পরিমাণ লিখুন (মিনিমাম ১০৳)।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       session.amount = amount; session.step = "deposit_trx";
       return bot.sendMessage(uid, `${session.method} পেমেন্টের TRX ID লিখুন।`);
     }
     if (session?.step === "deposit_trx") {
-      if (text.length < 5) return bot.sendMessage(uid, "সঠিক TRX ID দিন।");
+      if (text.length < 5) {
+        return bot.sendMessage(uid, "সঠিক TRX ID দিন।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       try {
         const inserted = db.prepare("INSERT INTO deposits(uid,method,amount,trx) VALUES(?,?,?,?)").run(uid, session.method, session.amount, text);
         const depositId = Number(inserted.lastInsertRowid);
         sendAdmin(`💳 <b>DEPOSIT #${depositId}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\nমাধ্যম: ${session.method}\nপরিমাণ: <b>${fmt(session.amount)}</b>\nTRX: <code>${esc(text)}</code>`, {
           inline_keyboard: [[{ text: "✅ Approve", callback_data: `deposit:approve:${depositId}` }, { text: "❌ Reject", callback_data: `deposit:reject:${depositId}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]]
         });
-        bot.sendMessage(uid, `✅ Deposit Request #${depositId} জমা হয়েছে।`, getHome(uid)).then(m => autoDeleteMsg(uid, m.message_id));
-      } catch (error) { bot.sendMessage(uid, "এই TRX ID আগে জমা হয়েছে।", getHome(uid)); }
+        bot.sendMessage(uid, `✅ Deposit Request #${depositId} জমা হয়েছে।`, getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
+      } catch (error) { bot.sendMessage(uid, "এই TRX ID আগে জমা হয়েছে।", getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)); }
       sessions.delete(uid); return;
     }
 
     // --- Quest Steps ---
     if (session?.step === "quest_gmail") {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return bot.sendMessage(uid, "সঠিক Gmail দিন।");
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+        return bot.sendMessage(uid, "সঠিক Gmail দিন।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       session.gmail = text; session.step = "quest_password";
       return bot.sendMessage(uid, "Gmail-এর পাসওয়ার্ড দিন।");
     }
@@ -307,9 +329,8 @@ bot.on("message", async msg => {
       const res = db.prepare(`INSERT INTO quests(uid, screenshot, gmail, password, contact) VALUES(?,?,?,?,?)`).run(uid, session.screenshot, session.gmail, session.password, session.contact);
       const questId = Number(res.lastInsertRowid);
       sessions.delete(uid);
-      bot.sendMessage(uid, "✅ Quest Request গ্রহণ করা হয়েছে।", getHome(uid));
+      bot.sendMessage(uid, "✅ Quest Request গ্রহণ করা হয়েছে।", getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
       
-      // Caption with buttons directly on the photo
       bot.sendPhoto(ADMIN_ID, session.screenshot, { 
         caption: `🎯 <b>NEW QUEST #${questId}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\n📧 ${esc(session.gmail)}\n🔑 ${esc(session.password)}\n📞 ${esc(session.contact)}`,
         parse_mode: "HTML",
@@ -321,15 +342,19 @@ bot.on("message", async msg => {
     // --- Coupon Quantity Step ---
     if (session?.step === "coupon_qty") {
       const qty = parseInt(text);
-      if (!qty || qty <= 0) return bot.sendMessage(uid, "সঠিক সংখ্যা লিখুন (যেমন: 1, 2, 5)।");
+      if (!qty || qty <= 0) {
+        return bot.sendMessage(uid, "সঠিক সংখ্যা লিখুন (যেমন: 1, 2, 5)।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       
       const stock = Number(getSetting(`stock_${session.coupon}`));
-      if (qty > stock) return bot.sendMessage(uid, `❌ দুঃখিত, আমাদের কাছে মাত্র ${stock}টি কুপন আছে।`);
+      if (qty > stock) {
+        return bot.sendMessage(uid, `❌ দুঃখিত, আমাদের কাছে মাত্র ${stock}টি কুপন আছে।`).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 4000));
+      }
 
       const price = Number(getSetting(`price_${session.coupon}`));
       const total = price * qty;
 
-      sessions.delete(uid); // clear current session
+      sessions.delete(uid); 
 
       const msgText = `🧾 <b>Coupon Summary</b>\n\n🎮 কুপন: $${session.coupon} (${qty} টি)\n💵 মোট দাম: <b>${fmt(total)}</b>\n\nআপনি কিভাবে কিনতে চান?`;
       const replyMarkup = {
@@ -353,13 +378,13 @@ bot.on("message", async msg => {
       })();
       sessions.delete(uid);
       if (result.error) return bot.sendMessage(uid, "সমস্যা হয়েছে বা ব্যালেন্স নেই।", getHome(uid));
-      bot.sendMessage(uid, `🧾 Order #${result.id} পেন্ডিং এ আছে।`, getHome(uid)).then(m => autoDeleteMsg(uid, m.message_id));
+      bot.sendMessage(uid, `🧾 Order #${result.id} পেন্ডিং এ আছে।`, getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
       return sendAdmin(`🛒 <b>NEW ORDER #${result.id}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\nCoupon: $${result.coupon} (1 pcs)\nদাম: <b>${fmt(result.price)}</b>\n🎮 Game ID: <code>${esc(text)}</code>`, {
         inline_keyboard: [[{ text: "✅ Approve", callback_data: `order:approve:${result.id}` }, { text: "❌ Reject", callback_data: `order:reject:${result.id}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]]
       });
     }
     if (session?.step === "order_gmail_email") {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return bot.sendMessage(uid, "সঠিক Gmail দিন।");
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return bot.sendMessage(uid, "সঠিক Gmail দিন।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
       session.gmail = text; session.step = "order_gmail_password";
       return bot.sendMessage(uid, "Gmail-এর পাসওয়ার্ড দিন।");
     }
@@ -374,7 +399,7 @@ bot.on("message", async msg => {
       })();
       sessions.delete(uid);
       if (result.error) return bot.sendMessage(uid, "সমস্যা হয়েছে বা ব্যালেন্স নেই।", getHome(uid));
-      bot.sendMessage(uid, `🧾 Order #${result.id} পেন্ডিং এ আছে।`, getHome(uid)).then(m => autoDeleteMsg(uid, m.message_id));
+      bot.sendMessage(uid, `🧾 Order #${result.id} পেন্ডিং এ আছে।`, getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
       return sendAdmin(`🛒 <b>NEW ORDER #${result.id}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\nCoupon: $${result.coupon} (1 pcs)\nদাম: <b>${fmt(result.price)}</b>\n📧 ${esc(info)}`, {
         inline_keyboard: [[{ text: "✅ Approve", callback_data: `order:approve:${result.id}` }, { text: "❌ Reject", callback_data: `order:reject:${result.id}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]]
       });
@@ -385,67 +410,95 @@ bot.on("message", async msg => {
       db.prepare("INSERT INTO support_tickets(uid, message) VALUES(?, ?)").run(uid, text);
       sendAdmin(`🆘 <b>Support Ticket</b>\n👤 User: <code>${uid}</code>\n💬 ${esc(text)}`, { inline_keyboard: [[{ text: "💬 Reply", callback_data: `support:reply:${uid}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]] });
       sessions.delete(uid);
-      return bot.sendMessage(uid, "✅ আপনার মেসেজ পাঠানো হয়েছে।", getHome(uid)).then(m => autoDeleteMsg(uid, m.message_id));
+      return bot.sendMessage(uid, "✅ আপনার মেসেজ পাঠানো হয়েছে।", getHome(uid)).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
     }
 
     if (session?.step === "admin_reply_support" && isAdmin(uid)) {
       await safeNotify(session.targetUid, `💬 <b>Admin-এর রিপ্লাই:</b>\n\n${esc(text)}`, { parse_mode: "HTML" });
       db.prepare("UPDATE support_tickets SET status='CLOSED', reply=? WHERE uid=? AND status='OPEN'").run(text, session.targetUid);
       sessions.delete(uid);
-      return bot.sendMessage(uid, "✅ রিপ্লাই পাঠানো হয়েছে।").then(m => autoDeleteMsg(uid, m.message_id));
+      return bot.sendMessage(uid, "✅ রিপ্লাই পাঠানো হয়েছে।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
     }
 
     if (session?.step === "broadcast_msg" && isAdmin(uid)) {
       const users = db.prepare("SELECT id FROM users WHERE is_banned=0").all();
       let count = 0;
-      bot.sendMessage(uid, `⏳ ${users.length} জনকে পাঠানো হচ্ছে...`).then(m => autoDeleteMsg(uid, m.message_id));
+      let notif = await bot.sendMessage(uid, `⏳ ${users.length} জনকে পাঠানো হচ্ছে...`);
       for (const u of users) {
         const ok = await safeNotify(u.id, text, { parse_mode: "HTML" });
         if (ok) count++;
       }
       sessions.delete(uid);
       logAdmin(`Broadcasted message to ${count} users`);
-      return bot.sendMessage(uid, `✅ সফলভাবে ${count} জনকে মেসেজ পাঠানো হয়েছে।`).then(m => autoDeleteMsg(uid, m.message_id, 10000));
+      bot.deleteMessage(uid, notif.message_id).catch(() => {});
+      return bot.sendMessage(uid, `✅ সফলভাবে ${count} জনকে মেসেজ পাঠানো হয়েছে।`).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
     }
 
-    // Admin Set Price
+    // ✅ Admin Set Price (Sequential Delete)
     if (session?.step === "admin_set_price" && isAdmin(uid)) {
       const price = parseMoney(text);
-      if (!price) return bot.sendMessage(uid, "সঠিক দাম লিখুন। (0 দিলে রিকোয়েস্ট সিস্টেম চালু হবে)");
+      if (!price) {
+        return bot.sendMessage(uid, "সঠিক দাম লিখুন। (0 দিলে রিকোয়েস্ট সিস্টেম চালু হবে)").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       setSetting(`price_${session.coupon}`, price);
       sessions.delete(uid);
       logAdmin(`Updated $${session.coupon} coupon price to ${fmt(price)}`);
-      return bot.sendMessage(uid, `✅ $${session.coupon} কুপনের দাম সেট হয়েছে: ${fmt(price)}`).then(m => autoDeleteMsg(uid, m.message_id));
+      
+      const successMsg = await bot.sendMessage(uid, `✅ $${session.coupon} কুপনের দাম সেট হয়েছে: ${fmt(price)}`);
+      
+      // এক এক করে মেসেজ ডিলিট (এনিমেশন)
+      setTimeout(() => {
+        sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300);
+      }, 1000); // ১ সেকেন্ড পর ডিলিট শুরু হবে
+      return;
     }
 
-    // Admin Set Stock
+    // ✅ Admin Set Stock (Sequential Delete)
     if (session?.step === "admin_set_stock" && isAdmin(uid)) {
       const stock = Number(text);
-      if (!Number.isInteger(stock) || stock < 0) return bot.sendMessage(uid, "সঠিক সংখ্যা লিখুন।");
+      if (!Number.isInteger(stock) || stock < 0) {
+        return bot.sendMessage(uid, "সঠিক সংখ্যা লিখুন।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       setSetting(`stock_${session.coupon}`, stock);
       sessions.delete(uid);
       logAdmin(`Updated $${session.coupon} coupon stock to ${stock}`);
-      return bot.sendMessage(uid, `✅ $${session.coupon} কুপনের স্টক সেট হয়েছে: ${stock}`).then(m => autoDeleteMsg(uid, m.message_id));
+      
+      const successMsg = await bot.sendMessage(uid, `✅ $${session.coupon} কুপনের স্টক সেট হয়েছে: ${stock}`);
+      
+      // এক এক করে মেসেজ ডিলিট (এনিমেশন)
+      setTimeout(() => {
+        sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300);
+      }, 1000);
+      return;
     }
 
     if (session?.step === "admin_ban_uid" && isAdmin(uid)) {
       const target = Number(text);
       const user = db.prepare("SELECT is_banned FROM users WHERE id=?").get(target);
-      if (!user) { sessions.delete(uid); return bot.sendMessage(uid, "❌ ইউজার পাওয়া যায়নি।"); }
+      if (!user) { sessions.delete(uid); return bot.sendMessage(uid, "❌ ইউজার পাওয়া যায়নি।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)); }
       const newBanStatus = user.is_banned ? 0 : 1;
       db.prepare("UPDATE users SET is_banned=? WHERE id=?").run(newBanStatus, target);
       sessions.delete(uid);
       logAdmin(`Toggled ban for user ${target} to ${newBanStatus}`);
-      return bot.sendMessage(uid, `✅ ইউজার ${target} এখন ${newBanStatus ? '🚫 Ban' : '✅ Unban'} করা হয়েছে।`).then(m => autoDeleteMsg(uid, m.message_id));
+      
+      const successMsg = await bot.sendMessage(uid, `✅ ইউজার ${target} এখন ${newBanStatus ? '🚫 Ban' : '✅ Unban'} করা হয়েছে।`);
+      setTimeout(() => {
+        sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300);
+      }, 1000);
+      return;
     }
 
     if (session?.step === "admin_text_rules" && isAdmin(uid)) {
       setSetting("rules_text", text); sessions.delete(uid);
-      return bot.sendMessage(uid, "✅ Rules আপডেট হয়েছে।").then(m => autoDeleteMsg(uid, m.message_id));
+      const successMsg = await bot.sendMessage(uid, "✅ Rules আপডেট হয়েছে।");
+      setTimeout(() => { sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300); }, 1000);
+      return;
     }
     if (session?.step === "admin_text_support" && isAdmin(uid)) {
       setSetting("support_text", text); sessions.delete(uid);
-      return bot.sendMessage(uid, "✅ Support Text আপডেট হয়েছে।").then(m => autoDeleteMsg(uid, m.message_id));
+      const successMsg = await bot.sendMessage(uid, "✅ Support Text আপডেট হয়েছে।");
+      setTimeout(() => { sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300); }, 1000);
+      return;
     }
 
     if (session?.step === "admin_add_card_code" && isAdmin(uid)) {
@@ -459,21 +512,36 @@ bot.on("message", async msg => {
         }
       })();
       sessions.delete(uid);
-      return bot.sendMessage(uid, `✅ ${count}টি কার্ড যোগ করা হয়েছে।`).then(m => {
-        autoDeleteMsg(uid, m.message_id);
+      const successMsg = await bot.sendMessage(uid, `✅ ${count}টি কার্ড যোগ করা হয়েছে।`);
+      setTimeout(() => { 
+        sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300); 
         adminPanel(uid);
-      });
+      }, 1000);
+      return;
     }
 
     if (session?.step === "admin_adjust_uid" && isAdmin(uid)) {
       const target = Number(text);
-      if (!db.prepare("SELECT id FROM users WHERE id=?").get(target)) { sessions.delete(uid); return bot.sendMessage(uid, "❌ ইউজার পাওয়া যায়নি।"); }
-      session.targetUid = target; session.step = "admin_adjust_amount";
-      return bot.sendMessage(uid, `বর্তমান ব্যালেন্স: ${fmt(balanceOf(target))}\n\nকত টাকা যোগ/বিয়োগ করবেন? (বিয়োগে মাইনাস দিন)`);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(target)) { 
+        sessions.delete(uid); 
+        return bot.sendMessage(uid, "❌ ইউজার পাওয়া যায়নি।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)); 
+      }
+      
+      const promptMsg = await bot.sendMessage(uid, `বর্তমান ব্যালেন্স: ${fmt(balanceOf(target))}\n\nকত টাকা যোগ/বিয়োগ করবেন? (বিয়োগে মাইনাস দিন)`);
+      sessions.set(uid, { step: "admin_adjust_amount", targetUid: target, lastPromptId: promptMsg.message_id });
+      
+      // আগের মেসেজগুলো ডিলিট
+      setTimeout(() => {
+        sequentialDelete(uid, [session.lastPromptId, msg.message_id], 300);
+      }, 500);
+      return;
     }
+    
     if (session?.step === "admin_adjust_amount" && isAdmin(uid)) {
       const amount = toPaisa(Number(text));
-      if (isNaN(amount)) return bot.sendMessage(uid, "সঠিক সংখ্যা দিন।");
+      if (isNaN(amount)) {
+        return bot.sendMessage(uid, "সঠিক সংখ্যা দিন।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
       const target = session.targetUid;
       const res = db.transaction(() => {
         const current = balanceOf(target);
@@ -485,8 +553,14 @@ bot.on("message", async msg => {
       sessions.delete(uid);
       if (res.error) return bot.sendMessage(uid, "❌ ব্যালেন্স ০ এর নিচে যাবে না।");
       logAdmin(`Adjusted balance of user ${target} by ${fmt(amount)}`);
-      await bot.sendMessage(uid, `✅ ব্যালেন্স আপডেট হয়েছে: ${fmt(res.nw)}`).then(m => autoDeleteMsg(uid, m.message_id));
-      return safeNotify(target, `⚠️ অ্যাডমিন আপনার ব্যালেন্স আপডেট করেছেন। নতুন ব্যালেন্স: ${fmt(res.nw)}`);
+      
+      const successMsg = await bot.sendMessage(uid, `✅ ব্যালেন্স আপডেট হয়েছে: ${fmt(res.nw)}`);
+      safeNotify(target, `⚠️ অ্যাডমিন আপনার ব্যালেন্স আপডেট করেছেন। নতুন ব্যালেন্স: ${fmt(res.nw)}`);
+      
+      setTimeout(() => {
+        sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300);
+      }, 1000);
+      return;
     }
 
   } catch (error) { console.error(error); }
@@ -538,7 +612,6 @@ bot.on("callback_query", async query => {
       
       if (stock <= 0) return answer("❌ এই কুপনটি স্টক আউট!", true);
 
-      // If price is 0, it's request-based.
       if (price === 0) {
          const existing = db.prepare(`SELECT id FROM prices WHERE uid=? AND coupon=? AND status IN ('WAITING','SENT','CONFIRMED')`).get(uid, coupon);
          if (existing) return answer("আপনার আগের রিকোয়েস্ট পেন্ডিং এ আছে।", true);
@@ -547,10 +620,9 @@ bot.on("callback_query", async query => {
          sendAdmin(`💬 <b>PRICE REQUEST</b>\nUser: <code>${uid}</code>\nCoupon: $${coupon}`, {
            inline_keyboard: [[{ text: "Reply Price", callback_data: `price:reply:${res.lastInsertRowid}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]]
          });
-         return bot.sendMessage(uid, "✅ দাম জানতে রিকোয়েস্ট পাঠানো হয়েছে।").then(m => autoDeleteMsg(uid, m.message_id));
+         return bot.sendMessage(uid, "✅ দাম জানতে রিকোয়েস্ট পাঠানো হয়েছে।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
       }
 
-      // If fixed price, ask for quantity
       sessions.set(uid, { step: "coupon_qty", coupon: coupon });
       await answer(); deleteMsg();
       return bot.sendMessage(uid, `🎮 $${coupon} কুপন (স্টক: ${stock})\n\nআপনি কতগুলো কুপন নিতে চান? (শুধু সংখ্যা লিখুন)`);
@@ -575,17 +647,13 @@ bot.on("callback_query", async query => {
       if (source === "bot") {
         if (balanceOf(uid) < cTotal) {
           await answer("ব্যালেন্স যথেষ্ট নয়!", true);
-          return bot.sendMessage(uid, `❌ আপনার ব্যালেন্স যথেষ্ট নয়।\nপ্রয়োজন: ${fmt(cTotal)}\nআপনার আছে: ${fmt(balanceOf(uid))}`);
+          return bot.sendMessage(uid, `❌ আপনার ব্যালেন্স যথেষ্ট নয়।\nপ্রয়োজন: ${fmt(cTotal)}\nআপনার আছে: ${fmt(balanceOf(uid))}`).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
         }
 
-        // Create Order & Deduct Stock NOW
         const result = db.transaction(() => {
            const currentStock = Number(getSetting(`stock_${coupon}`));
            if (currentStock < cQty) return { error: "STOCK" };
-
-           // Deduct stock
            setSetting(`stock_${coupon}`, currentStock - cQty);
-
            const priceRes = db.prepare("INSERT INTO prices(uid,coupon,price,status) VALUES(?,?,?,'ORDERED')").run(uid, coupon, cTotal);
            const priceId = priceRes.lastInsertRowid;
            const ordRes = db.prepare("INSERT INTO orders(uid, price_id, coupon, qty, amount) VALUES(?,?,?,?,?)").run(uid, priceId, coupon, cQty, cTotal);
@@ -595,7 +663,7 @@ bot.on("callback_query", async query => {
         if (result.error) return answer("স্টক শেষ!", true);
 
         await answer("Order placed!"); deleteMsg();
-        bot.sendMessage(uid, `🧾 আপনার Order #${result.orderId} প্লেস হয়েছে। এডমিন এপ্রুভ করলে ডেলিভারি দেওয়া হবে।`).then(m => autoDeleteMsg(uid, m.message_id, 10000));
+        bot.sendMessage(uid, `🧾 আপনার Order #${result.orderId} প্লেস হয়েছে। এডমিন এপ্রুভ করলে ডেলিভারি দেওয়া হবে।`).then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
 
         return sendAdmin(`🛒 <b>NEW COUPON ORDER #${result.orderId}</b>\n👤 ${esc(displayName(query.from))}\n🆔 <code>${uid}</code>\nCoupon: $${coupon} (${cQty} pcs)\nমোট দাম: <b>${fmt(cTotal)}</b>`, {
           inline_keyboard: [[{ text: "✅ Approve", callback_data: `order:approve:${result.orderId}` }, { text: "❌ Reject", callback_data: `order:reject:${result.orderId}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]]
@@ -603,7 +671,6 @@ bot.on("callback_query", async query => {
       }
     }
 
-    // Existing Price Confirm flow
     if (data.startsWith("price:confirm:")) {
       const reqId = Number(data.split(":")[2]);
       const req = db.prepare("SELECT * FROM prices WHERE id=? AND uid=? AND status='SENT'").get(reqId, uid);
@@ -650,18 +717,27 @@ bot.on("callback_query", async query => {
     }
 
     if (data === "admin:ban") {
-      sessions.set(uid, { step: "admin_ban_uid" }); await answer(); deleteMsg();
-      return bot.sendMessage(uid, "যে ইউজারকে Ban/Unban করবেন তার Telegram ID দিন:");
+      const pMsg = await bot.sendMessage(uid, "যে ইউজারকে Ban/Unban করবেন তার Telegram ID দিন:");
+      sessions.set(uid, { step: "admin_ban_uid", lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg();
+      return;
     }
     
     if (data === "admin:texts") {
       await answer(); deleteMsg();
       return bot.sendMessage(uid, "কোন টেক্সট এডিট করবেন?", { reply_markup: { inline_keyboard: [[{ text: "📖 Rules", callback_data: "admin:text:rules" }], [{ text: "💬 Support", callback_data: "admin:text:support" }], [{ text: "❌ Close", callback_data: "msg:delete" }]] } });
     }
-    if (data === "admin:text:rules") { sessions.set(uid, { step: "admin_text_rules" }); await answer(); deleteMsg(); return bot.sendMessage(uid, "নতুন Rules লিখুন:"); }
-    if (data === "admin:text:support") { sessions.set(uid, { step: "admin_text_support" }); await answer(); deleteMsg(); return bot.sendMessage(uid, "নতুন Support Text লিখুন:"); }
+    if (data === "admin:text:rules") { 
+      const pMsg = await bot.sendMessage(uid, "নতুন Rules লিখুন:"); 
+      sessions.set(uid, { step: "admin_text_rules", lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg(); return; 
+    }
+    if (data === "admin:text:support") { 
+      const pMsg = await bot.sendMessage(uid, "নতুন Support Text লিখুন:"); 
+      sessions.set(uid, { step: "admin_text_support", lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg(); return; 
+    }
 
-    // --- Separate Price & Stock Admin Menus ---
     if (data === "admin:set_prices") {
       await answer(); deleteMsg();
       const btns = [4,5,10,20,25].map(c => {
@@ -673,8 +749,10 @@ bot.on("callback_query", async query => {
     }
     if (data.startsWith("admin:price_set:")) {
       const c = Number(data.split(":")[2]);
-      sessions.set(uid, { step: "admin_set_price", coupon: c }); await answer(); deleteMsg();
-      return bot.sendMessage(uid, `$${c} কুপনের নতুন দাম কত BDT? (0 দিলে ইউজার রিকোয়েস্ট পাঠাবে):`);
+      const pMsg = await bot.sendMessage(uid, `$${c} কুপনের নতুন দাম কত BDT? (0 দিলে ইউজার রিকোয়েস্ট পাঠাবে):`);
+      sessions.set(uid, { step: "admin_set_price", coupon: c, lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg();
+      return;
     }
 
     if (data === "admin:set_stocks") {
@@ -688,11 +766,12 @@ bot.on("callback_query", async query => {
     }
     if (data.startsWith("admin:stock_set:")) {
       const c = Number(data.split(":")[2]);
-      sessions.set(uid, { step: "admin_set_stock", coupon: c }); await answer(); deleteMsg();
-      return bot.sendMessage(uid, `$${c} কুপনের নতুন স্টক কত? (সংখ্যা লিখুন):`);
+      const pMsg = await bot.sendMessage(uid, `$${c} কুপনের নতুন স্টক কত? (সংখ্যা লিখুন):`);
+      sessions.set(uid, { step: "admin_set_stock", coupon: c, lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg();
+      return;
     }
 
-    // --- Card Management ---
     if (data === "admin:cards") {
       await answer(); deleteMsg();
       return bot.sendMessage(uid, "🎁 <b>Card Management</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "➕ Add Cards", callback_data: "list:add_cards" }], [{ text: "📦 View Available", callback_data: "list:view_cards" }], [{ text: "🗑 Delete All Available", callback_data: "admin:delallcards" }], [{ text: "❌ Close", callback_data: "msg:delete" }]] } });
@@ -704,8 +783,10 @@ bot.on("callback_query", async query => {
     }
 
     if (data === "list:add_cards") {
-      sessions.set(uid, { step: "admin_add_card_code" }); await answer(); deleteMsg();
-      return bot.sendMessage(uid, "🎁 কার্ড ফরম্যাট: <code>CODE | NOTE</code>\n\nযেমন:\nCARD-111 | USA Only\nCARD-222 | UK Only\n\n(প্রতি লাইনে একটি করে দিন)", { parse_mode: "HTML" });
+      const pMsg = await bot.sendMessage(uid, "🎁 কার্ড ফরম্যাট: <code>CODE | NOTE</code>\n\nযেমন:\nCARD-111 | USA Only\nCARD-222 | UK Only\n\n(প্রতি লাইনে একটি করে দিন)", { parse_mode: "HTML" });
+      sessions.set(uid, { step: "admin_add_card_code", lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg();
+      return;
     }
 
     if (data === "list:view_cards") {
@@ -742,14 +823,18 @@ bot.on("callback_query", async query => {
 
     if (data.startsWith("support:reply:")) {
       const target = Number(data.split(":")[2]);
-      sessions.set(uid, { step: "admin_reply_support", targetUid: target }); await answer(); deleteMsg();
-      return bot.sendMessage(uid, `ইউজার ${target} কে রিপ্লাই লিখুন:`);
+      const pMsg = await bot.sendMessage(uid, `ইউজার ${target} কে রিপ্লাই লিখুন:`);
+      sessions.set(uid, { step: "admin_reply_support", targetUid: target, lastPromptId: pMsg.message_id }); 
+      await answer(); deleteMsg();
+      return;
     }
 
     if (data.startsWith("price:reply:")) {
       const rid = Number(data.split(":")[2]);
-      sessions.set(uid, { step: "admin_price", requestId: rid, priceMsgId: msgId, priceChatId: chatId }); await answer();
-      return bot.sendMessage(uid, `Price request #${rid}\nBDT দাম লিখুন:`);
+      const pMsg = await bot.sendMessage(uid, `Price request #${rid}\nBDT দাম লিখুন:`);
+      sessions.set(uid, { step: "admin_price", requestId: rid, priceMsgId: msgId, priceChatId: chatId, lastPromptId: pMsg.message_id }); 
+      await answer();
+      return;
     }
 
     if (data.startsWith("deposit:")) {
@@ -791,7 +876,6 @@ bot.on("callback_query", async query => {
           db.prepare("UPDATE prices SET status='ORDERED' WHERE id=?").run(o.price_id);
           db.prepare(`INSERT INTO transactions(uid,type,amount,ref,note) VALUES(?,?,?,?,?)`).run(o.uid, "PURCHASE", -o.amount, `ORD-${rid}`, `Coupon purchase`);
         } else {
-          // Refund Stock on Reject
           const currentStock = Number(getSetting(`stock_${o.coupon}`));
           setSetting(`stock_${o.coupon}`, currentStock + (o.qty || 1));
           db.prepare("UPDATE orders SET status='REJECTED', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(uid, rid);
@@ -844,7 +928,7 @@ bot.on("callback_query", async query => {
     if (data === "list:deposits") {
       const rows = db.prepare("SELECT * FROM deposits WHERE status='PENDING' LIMIT 10").all();
       await answer(); deleteMsg();
-      if (!rows.length) return bot.sendMessage(uid, "Pending Deposit নেই।").then(m => autoDeleteMsg(uid, m.message_id));
+      if (!rows.length) return bot.sendMessage(uid, "Pending Deposit নেই।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
       rows.forEach(r => bot.sendMessage(uid, `💳 <b>Deposit #${r.id}</b>\nUser: <code>${r.uid}</code>\n${r.method}: ${fmt(r.amount)}\nTRX: ${r.trx}`, {
         parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `deposit:approve:${r.id}` }, { text: "❌ Reject", callback_data: `deposit:reject:${r.id}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]] }
       }));
@@ -854,7 +938,7 @@ bot.on("callback_query", async query => {
     if (data === "list:orders") {
       const rows = db.prepare("SELECT * FROM orders WHERE status='PENDING' LIMIT 10").all();
       await answer(); deleteMsg();
-      if (!rows.length) return bot.sendMessage(uid, "Pending Order নেই।").then(m => autoDeleteMsg(uid, m.message_id));
+      if (!rows.length) return bot.sendMessage(uid, "Pending Order নেই।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
       rows.forEach(r => bot.sendMessage(uid, `🛒 <b>Order #${r.id}</b>\nUser: <code>${r.uid}</code>\nCoupon: $${r.coupon} (${r.qty} pcs)\nদাম: ${fmt(r.amount)}\n${r.delivery_method ? `${r.delivery_method}: ${r.delivery_info}` : ''}`, {
         parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `order:approve:${r.id}` }, { text: "❌ Reject", callback_data: `order:reject:${r.id}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]] }
       }));
@@ -864,7 +948,7 @@ bot.on("callback_query", async query => {
     if (data === "list:quests") {
       const rows = db.prepare("SELECT * FROM quests WHERE status='PENDING' LIMIT 10").all();
       await answer(); deleteMsg();
-      if (!rows.length) return bot.sendMessage(uid, "Pending Quest নেই।").then(m => autoDeleteMsg(uid, m.message_id));
+      if (!rows.length) return bot.sendMessage(uid, "Pending Quest নেই।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
       rows.forEach(r => {
         bot.sendPhoto(uid, r.screenshot, { 
           caption: `🎯 <b>Quest #${r.id}</b>\nUser: <code>${r.uid}</code>\nGmail: ${r.gmail}\nPass: ${r.password}`, 
@@ -879,7 +963,7 @@ bot.on("callback_query", async query => {
       const table = data.includes("orders") ? "orders" : "quests";
       const rows = db.prepare(`SELECT * FROM ${table} WHERE status='PROCESSING' LIMIT 10`).all();
       await answer(); deleteMsg();
-      if (!rows.length) return bot.sendMessage(uid, "In-Progress নেই।").then(m => autoDeleteMsg(uid, m.message_id));
+      if (!rows.length) return bot.sendMessage(uid, "In-Progress নেই।").then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
       rows.forEach(r => bot.sendMessage(uid, `🔄 <b>${table.slice(0,-1).toUpperCase()} #${r.id}</b>\nUser: <code>${r.uid}</code>`, {
         parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "✅ Complete", callback_data: `${table.slice(0,-1)}:complete:${r.id}` }], [{ text: "🗑 Delete", callback_data: `msg:delete` }]] }
       }));
@@ -895,5 +979,5 @@ bot.on("callback_query", async query => {
 bot.on("polling_error", e => console.error("Polling error:", e?.message || e));
 bot.getMe().then(info => {
   console.log(`✅ BOT CONNECTED: @${info.username}`);
-  bot.sendMessage(ADMIN_ID, `✅ <b>বট কানেক্টেড!</b>\n\n🆕 নতুন আপডেট:\n• কুপন কেনার সময় পরিমাণ ও অপশন (বট/অ্যাডমিন)\n• অর্ডার প্লেসের সাথে সাথে স্টক কমবে\n• WhatsApp এ ডিরেক্ট মেসেজ অপশন\n• অ্যাডমিন প্যানেলে আলাদা দাম ও স্টক বাটন`, { parse_mode: "HTML" });
+  bot.sendMessage(ADMIN_ID, `✅ <b>বট কানেক্টেড!</b>\n\n🆕 নতুন আপডেট:\n• এক এক করে মেসেজ ডিলিট (এনিমেশন)\n• কুপন কেনার সময় পরিমাণ ও অপশন\n• অর্ডার প্লেসের সাথে সাথে স্টক কমবে\n• WhatsApp এ ডিরেক্ট মেসেজ অপশন`, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 10000));
 });
