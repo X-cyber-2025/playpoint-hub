@@ -1,4 +1,4 @@
-// PLAY POINT QUEST HUB — Ultimate Updated Code
+// PLAY POINT QUEST HUB — Ultimate Updated Code (Sell Gmail/Pass + WhatsApp)
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS sell_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL,
   coupon INTEGER NOT NULL CHECK(coupon IN (4,5,10,20,25)),
   qty INTEGER NOT NULL CHECK(qty > 0), amount INTEGER NOT NULL CHECK(amount > 0),
+  gmail TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')),
   reviewed_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT,
   FOREIGN KEY(uid) REFERENCES users(id)
@@ -75,9 +76,11 @@ CREATE TABLE IF NOT EXISTS us_addresses (
 );
 `);
 
-// ===== Migrations =====
+// ===== Migrations (Safe for existing DB) =====
 try { db.exec("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0;"); } catch(e) {}
 try { db.exec("ALTER TABLE orders ADD COLUMN qty INTEGER DEFAULT 1;"); } catch(e) {}
+try { db.exec("ALTER TABLE sell_requests ADD COLUMN gmail TEXT DEFAULT '';"); } catch(e) {}
+try { db.exec("ALTER TABLE sell_requests ADD COLUMN password TEXT DEFAULT '';"); } catch(e) {}
 
 const defaultSettings = [
   ['rules_text', '📖 <b>RULES & REGULATIONS</b>\n\n1️⃣ সঠিক Transaction ID জমা দিন।\n2️⃣ Admin যাচাই করার পরই ব্যালেন্স যোগ হবে।\n3️⃣ PIN, OTP বা পাসওয়ার্ড কারও সাথে শেয়ার করবেন না।\n4️⃣ Coupon-এর দাম Admin নিশ্চিত করবেন।\n5️⃣ অর্ডার অনুমোদনের আগে ব্যালেন্স কাটা হবে না।'],
@@ -194,13 +197,13 @@ const getHome = (uid) => {
     [{ text: "🎮 COD Coupons" }, { text: "🔢 BIN Numbers" }],
     [{ text: "💳 Card Make" }, { text: "🇺🇸 USA Fake Address" }],
     [{ text: "🎯 Quest Complete" }, { text: "📜 Transactions" }],
-    [{ text: "💬 Support" }, { text: "📖 Rules" }],
-    [{ text: "➕ Add Balance" }]
+    [{ text: "💬 Support" }, { text: "📞 WhatsApp Support" }], // Added WhatsApp
+    [{ text: "➕ Add Balance" }, { text: "📖 Rules" }]
   ];
   if (isAdmin(uid)) keyboard.push([{ text: "🛠 Admin Menu" }]);
   return { reply_markup: { keyboard, resize_keyboard: true } };
 };
-const MENU_BUTTONS = new Set(["🚀 Start / Restart","💰 My Balance","➕ Add Balance","🎮 COD Coupons","🔢 BIN Numbers","💳 Card Make","🇺🇸 USA Fake Address","🎯 Quest Complete","📜 Transactions","💬 Support","📖 Rules","🔄 Restart Bot","🛠 Admin Menu"]);
+const MENU_BUTTONS = new Set(["🚀 Start / Restart","💰 My Balance","➕ Add Balance","🎮 COD Coupons","🔢 BIN Numbers","💳 Card Make","🇺🇸 USA Fake Address","🎯 Quest Complete","📜 Transactions","💬 Support","📞 WhatsApp Support","📖 Rules","🔄 Restart Bot","🛠 Admin Menu"]);
 
 function adminPanel(chatId) {
   return bot.sendMessage(chatId, "🛠 <b>ADMIN CONTROL PANEL</b>\n\n━━━━━━━━━━━━━━━━━━\n<i>আপনি নিচের অপশনগুলো থেকে যেকোনো কিছু ম্যানেজ করতে পারেন।</i>", {
@@ -289,7 +292,7 @@ bot.on("message", async msg => {
         try {
           await bot.sendMessage(u.id, bMsg, { parse_mode: "HTML", ...getHome(u.id) });
           count++;
-          await new Promise(r => setTimeout(r, 50)); // Delay to avoid Telegram flood limits
+          await new Promise(r => setTimeout(r, 50));
         } catch (e) {}
       }
       bot.deleteMessage(uid, notif.message_id).catch(() => {});
@@ -394,12 +397,21 @@ bot.on("message", async msg => {
         );
       }
       if (text === "🇺🇸 USA Fake Address") {
+        // Fetch a random address each time
         const addr = db.prepare("SELECT * FROM us_addresses ORDER BY RANDOM() LIMIT 1").get();
         if (!addr) {
           return bot.sendMessage(uid, "😔 <b>এখনো কোনো USA Address আপলোড করা হয়নি।</b>", { parse_mode: "HTML", ...getHome(uid) })
             .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
         }
-        return bot.sendMessage(uid, `🇺🇸 <b>USA FAKE ADDRESS</b>\n\n<blockquote>${esc(addr.address_text)}</blockquote>\n\n📋 <i>এড্রেসটি কপি করতে ট্যাপ করুন।</i>`, { parse_mode: "HTML", ...getHome(uid) });
+        return bot.sendMessage(uid, `🇺🇸 <b>USA FAKE ADDRESS</b>\n\n<blockquote expandable>${esc(addr.address_text)}</blockquote>\n\n📋 <i>এড্রেসটি কপি করতে ট্যাপ করুন।</i>`, { parse_mode: "HTML", ...getHome(uid) });
+      }
+      if (text === "📞 WhatsApp Support") {
+        if (!ADMIN_WHATSAPP) return bot.sendMessage(uid, "⚠️ <b>WhatsApp নম্বর সেট করা নেই।</b>\n\nঅনুগ্রহ করে Support-এ মেসেজ দিন।", { parse_mode: "HTML", ...getHome(uid) });
+        const waUrl = `https://wa.me/${ADMIN_WHATSAPP.replace(/[^0-9]/g, '')}`;
+        return bot.sendMessage(uid, `📞 <b>WhatsApp Support</b>\n\nযেকোনো জরুরি প্রয়োজনে সরাসরি অ্যাডমিনের সাথে যোগাযোগ করুন।`, {
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: [[{ text: "💬 WhatsApp-এ মেসেজ দিন", url: waUrl }], [{ text: "❌ Close", callback_data: "msg:delete" }]] }
+        });
       }
       if (text === "📜 Transactions") {
         const rows = db.prepare(`SELECT type, amount, note, created_at FROM transactions WHERE uid=? ORDER BY id DESC LIMIT 10`).all(uid);
@@ -417,7 +429,7 @@ bot.on("message", async msg => {
       }
     }
 
-    // Fallback for unknown text (prevents needing /start)
+    // Fallback for unknown text
     if (!session) {
       return bot.sendMessage(uid, "🤖 <b>আমি আপনার কথা বুঝতে পারিনি।</b>\n\n<i>নিচের মেনু থেকে অপশন বেছে নিন অথবা নতুন করে শুরু করতে 🚀 Start / Restart চাপুন।</i>", { parse_mode: "HTML", ...getHome(uid) });
     }
@@ -462,20 +474,45 @@ bot.on("message", async msg => {
       );
     }
 
-    // === Sell Quantity ===
+    // === Sell Flow (Quantity -> Gmail -> Password) ===
     if (session?.step === "sell_qty") {
       const qty = parseInt(text);
       if (!qty || qty <= 0 || qty > 1000) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন</b> (যেমন: 1, 2, 5)।", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
       }
-      const total = session.sellPrice * qty;
-      const sellRes = db.prepare("INSERT INTO sell_requests(uid, coupon, qty, amount) VALUES(?,?,?,?)").run(uid, session.coupon, qty, total);
+      session.qty = qty;
+      session.step = "sell_gmail";
+      return bot.sendMessage(uid, `📧 <b>কুপনটি যে Gmail-এ রিডিম করা হয়েছে, সেই Gmail দিন:</b>`, { parse_mode: "HTML" });
+    }
+
+    if (session?.step === "sell_gmail") {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+        return bot.sendMessage(uid, "⚠️ <b>সঠিক Gmail দিন।</b>", { parse_mode: "HTML" })
+          .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
+      session.gmail = text;
+      session.step = "sell_pass";
+      return bot.sendMessage(uid, `🔑 <b>Gmail-এর পাসওয়ার্ড দিন:</b>`, { parse_mode: "HTML" });
+    }
+
+    if (session?.step === "sell_pass") {
+      const pass = text;
+      const total = session.sellPrice * session.qty;
+      
+      const sellRes = db.prepare("INSERT INTO sell_requests(uid, coupon, qty, amount, gmail, password) VALUES(?,?,?,?,?,?)")
+        .run(uid, session.coupon, session.qty, total, session.gmail, pass);
       const sellId = Number(sellRes.lastInsertRowid);
+      
       sessions.delete(uid);
-      bot.sendMessage(uid, `✅ <b>Sell Request #${sellId} জমা হয়েছে।</b>\n\n🎮 $${session.coupon} × ${qty}\n💵 পাবেন: <b>${fmt(total)}</b>\n\n⏳ <i>Admin approve করলে ব্যালেন্স যোগ হবে।</i>`, { parse_mode: "HTML", ...getHome(uid) })
+      
+      bot.sendMessage(uid, `✅ <b>Sell Request #${sellId} সফলভাবে জমা হয়েছে!</b>\n\n` +
+        `🎮 <b>কুপন:</b> $${session.coupon} (${session.qty} টি)\n` +
+        `💵 <b>পাবেন:</b> <code>${fmt(total)}</code>\n\n` +
+        `⏳ <i>এডমিন যাচাই করে আপনার ব্যালেন্স যোগ করে দিবে।</i>`, { parse_mode: "HTML", ...getHome(uid) })
         .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 8000));
-      return sendAdmin(`💰 <b>NEW SELL REQUEST #${sellId}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\n🎮 $${session.coupon} × ${qty}\n💵 Pay: <b>${fmt(total)}</b>\n\n⚠️ Approve করলে stock +${qty} হবে।`, {
+        
+      return sendAdmin(`💰 <b>NEW SELL REQUEST #${sellId}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\n\n🎮 Coupon: $${session.coupon} × ${session.qty}\n💵 Pay: <b>${fmt(total)}</b>\n\n📧 <b>Gmail:</b> <code>${esc(session.gmail)}</code>\n🔑 <b>Pass:</b> <code>${esc(pass)}</code>\n\n⚠️ Approve করলে stock +${session.qty} হবে।`, {
         inline_keyboard: [[{ text: "✅ Approve", callback_data: `sell:approve:${sellId}` }, { text: "❌ Reject", callback_data: `sell:reject:${sellId}` }], [{ text: "🗑 Delete", callback_data: "msg:delete" }]]
       });
     }
@@ -903,7 +940,7 @@ bot.on("callback_query", async query => {
       if (sp <= 0) return answer("এই কুপন এখন কেনা হচ্ছে না।", true);
       sessions.set(uid, { step: "sell_qty", coupon: c, sellPrice: sp });
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>৳${(sp/100).toFixed(2)}</b>\n\n<i>কতটি বিক্রি করতে চান?</i>`, { parse_mode: "HTML" });
+      return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>৳${(sp/100).toFixed(2)}</b>\n\n<i>কতটি বিক্রি করতে চান? (শুধু সংখ্যা লিখুন)</i>`, { parse_mode: "HTML" });
     }
 
     // === Buy Coupon ===
@@ -1086,7 +1123,7 @@ bot.on("callback_query", async query => {
       await answer(); deleteMsg();
       if (!rows.length) return bot.sendMessage(uid, "Pending Sell Request নেই।")
         .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
-      rows.forEach(r => bot.sendMessage(uid, `💰 <b>Sell Request #${r.id}</b>\nUser: <code>${r.uid}</code>\nCoupon: $${r.coupon} × ${r.qty}\nপেমেন্ট: ${fmt(r.amount)}`, {
+      rows.forEach(r => bot.sendMessage(uid, `💰 <b>Sell Request #${r.id}</b>\nUser: <code>${r.uid}</code>\nCoupon: $${r.coupon} × ${r.qty}\nGmail: <code>${esc(r.gmail || 'N/A')}</code>\nPass: <code>${esc(r.password || 'N/A')}</code>\nপেমেন্ট: ${fmt(r.amount)}`, {
         parse_mode: "HTML",
         reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `sell:approve:${r.id}` }, { text: "❌ Reject", callback_data: `sell:reject:${r.id}` }], [{ text: "🗑 Delete", callback_data: "msg:delete" }]] }
       }));
@@ -1381,8 +1418,9 @@ bot.getMe().then(async (info) => {
   
   const adminMsg = `🚀 <b>বট সফলভাবে আপডেট হয়েছে!</b>\n\n` +
     `✨ <b>নতুন আপডেট:</b>\n` +
-    `• 🚀 ইউজারকে আর /start লিখতে হবে না, যেকোনো মেসেজে মেইন মেনু আসবে।\n` +
-    `• 📣 এক ক্লিকে সবার কাছে মেসেজ পাঠানোর জন্য নতুন কমান্ড: <code>/broadcast আপনার মেসেজ</code>\n\n` +
+    `• 💰 Sell Coupon এ Gmail ও Pass যুক্ত হয়েছে।\n` +
+    `• 📞 WhatsApp Support যুক্ত হয়েছে।\n` +
+    `• 🇺🇸 USA Address র‍্যান্ডম আপডেট ফিক্স।\n\n` +
     `⏳ সমস্ত ইউজারকে নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000));
@@ -1390,8 +1428,8 @@ bot.getMe().then(async (info) => {
   const users = db.prepare("SELECT id FROM users").all();
   const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
     `✨ <b>নতুন সুবিধা:</b>\n` +
-    `• এখন আর বার বার /start লিখতে হবে না!\n` +
-    `• যেকোনো টেক্সট লিখলেই মেইন মেনু চলে আসবে।\n\n` +
+    `• 📞 WhatsApp Support-এ সরাসরি মেসেজ দিন।\n` +
+    `• 💰 কুপন সেল করার নতুন নিয়ম।\n\n` +
     `👇 <i>যেকোনো সমস্যায় 🚀 Start / Restart চাপুন।</i>`;
 
   let count = 0;
