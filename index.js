@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS bins (
   country TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   added_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS us_addresses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  address_text TEXT NOT NULL,
+  added_by INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `);
 
 // ===== Migrations =====
@@ -130,7 +135,7 @@ function parseMoney(text) {
   return toPaisa(v);
 }
 
-// ===== Card Generation (Fixed for up to 15 digits BIN) =====
+// ===== Card Generation =====
 function luhnCheckDigit(partial) {
   let sum = 0, alt = true;
   for (let i = partial.length - 1; i >= 0; i--) {
@@ -148,7 +153,6 @@ function generateCardNumber(bin) {
   const partial = bin + random;
   return partial + luhnCheckDigit(partial);
 }
-// Allows 4 to 15 digit BINs (Fixed the 13 digit issue)
 function parseBinInput(text) {
   if (!text.startsWith('/')) return null;
   const parts = text.slice(1).split('/').filter(Boolean);
@@ -163,7 +167,7 @@ function parseBinInput(text) {
   }
   if (parts.length >= 3) {
     if (!/^\d{2,4}$/.test(parts[2])) return null;
-    yy = parts[2].slice(-2); // Keep last 2 digits for year
+    yy = parts[2].slice(-2);
   }
   return { bin, mm, yy };
 }
@@ -188,14 +192,15 @@ const getHome = (uid) => {
   const keyboard = [
     ["🚀 Start / Restart", "💰 My Balance"],
     ["🎮 COD Coupons", "🔢 BIN Numbers"],
-    ["💳 Card Make", "🎯 Quest Complete"],
-    ["📜 Transactions", "💬 Support"],
-    ["📖 Rules", "➕ Add Balance"]
+    ["💳 Card Make", "🇺🇸 USA Fake Address"],
+    ["🎯 Quest Complete", "📜 Transactions"],
+    ["💬 Support", "📖 Rules"],
+    ["➕ Add Balance"]
   ];
   if (isAdmin(uid)) keyboard.push(["🛠 Admin Menu"]);
   return { reply_markup: { keyboard, resize_keyboard: true } };
 };
-const MENU_BUTTONS = new Set(["🚀 Start / Restart","💰 My Balance","➕ Add Balance","🎮 COD Coupons","🔢 BIN Numbers","💳 Card Make","🎯 Quest Complete","📜 Transactions","💬 Support","📖 Rules","🔄 Restart Bot","🛠 Admin Menu"]);
+const MENU_BUTTONS = new Set(["🚀 Start / Restart","💰 My Balance","➕ Add Balance","🎮 COD Coupons","🔢 BIN Numbers","💳 Card Make","🇺🇸 USA Fake Address","🎯 Quest Complete","📜 Transactions","💬 Support","📖 Rules","🔄 Restart Bot","🛠 Admin Menu"]);
 
 function adminPanel(chatId) {
   return bot.sendMessage(chatId, "🛠 <b>ADMIN CONTROL PANEL</b>\n\nআপনি নিচের অপশনগুলো থেকে যেকোনো কিছু ম্যানেজ করতে পারেন।", {
@@ -208,9 +213,9 @@ function adminPanel(chatId) {
       [{ text: "🆘 Support Inbox", callback_data: "list:support" }, { text: "👥 All Users", callback_data: "list:users" }],
       [{ text: "💵 Set Prices", callback_data: "admin:set_prices" }, { text: "📦 Set Stocks", callback_data: "admin:set_stocks" }],
       [{ text: "💰 Sell Rates", callback_data: "admin:set_sell_prices" }, { text: "📥 Sell Requests", callback_data: "list:sell_requests" }],
-      [{ text: "🔢 BIN & Card Make", callback_data: "admin:bins" }, { text: "🚫 Ban/Unban", callback_data: "admin:ban" }],
-      [{ text: "📝 Edit Texts", callback_data: "admin:texts" }, { text: "📜 Admin Logs", callback_data: "list:logs" }],
-      [{ text: "❌ Close Panel", callback_data: "panel:close" }]
+      [{ text: "🔢 BIN Management", callback_data: "admin:bins" }, { text: "🇺🇸 USA Address", callback_data: "admin:us_addresses" }],
+      [{ text: "🚫 Ban/Unban", callback_data: "admin:ban" }, { text: "📝 Edit Texts", callback_data: "admin:texts" }],
+      [{ text: "📜 Admin Logs", callback_data: "list:logs" }, { text: "❌ Close Panel", callback_data: "panel:close" }]
     ]}
   });
 }
@@ -258,7 +263,6 @@ bot.on("message", async msg => {
   const text = msg.text ? msg.text.trim() : "";
 
   try {
-    // Force join check for every action
     if (!(await checkMembership(uid))) return sendJoinPrompt(uid);
     
     const dbUser = db.prepare("SELECT is_banned FROM users WHERE id=?").get(uid);
@@ -296,8 +300,8 @@ bot.on("message", async msg => {
 
     if (!msg.text) return;
 
-    // Handle "Start / Restart" button from keyboard
-    if (text === "🚀 Start / Restart" || text === "🔄 Restart Bot") {
+    // Handle "Start / Restart" from keyboard
+    if (text === "🚀 Start / Restart" || text === "🔄 Restart Bot" || text.toLowerCase() === "start") {
       return handleStart(msg);
     }
 
@@ -364,6 +368,14 @@ bot.on("message", async msg => {
           { parse_mode: "HTML" }
         );
       }
+      if (text === "🇺🇸 USA Fake Address") {
+        const addr = db.prepare("SELECT * FROM us_addresses ORDER BY RANDOM() LIMIT 1").get();
+        if (!addr) {
+          return bot.sendMessage(uid, "😔 এখনো কোনো USA Address আপলোড করা হয়নি।", getHome(uid))
+            .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
+        }
+        return bot.sendMessage(uid, `🇺🇸 <b>USA Fake Address</b>\n\n<blockquote>${esc(addr.address_text)}</blockquote>`, { parse_mode: "HTML", ...getHome(uid) });
+      }
       if (text === "📜 Transactions") {
         const rows = db.prepare(`SELECT type, amount, note, created_at FROM transactions WHERE uid=? ORDER BY id DESC LIMIT 10`).all(uid);
         if (!rows.length) return bot.sendMessage(uid, "📭 কোনো ট্রানজেকশন পাওয়া যায়নি।", getHome(uid))
@@ -378,6 +390,11 @@ bot.on("message", async msg => {
       if (text === "📖 Rules") {
         return bot.sendMessage(uid, getSetting('rules_text'), { parse_mode: "HTML", ...getHome(uid) });
       }
+    }
+
+    // Fallback for unknown text (prevents needing /start)
+    if (!session) {
+      return bot.sendMessage(uid, "🤖 আমি আপনার কথা বুঝতে পারিনি। নিচের মেনু থেকে অপশন বেছে নিন অথবা নতুন করে শুরু করতে 🚀 Start / Restart চাপুন।", getHome(uid));
     }
 
     // === Card Make BIN step ===
@@ -411,7 +428,6 @@ bot.on("message", async msg => {
       }
       logAdmin(`User ${uid} generated 10 cards from BIN ${parsed.bin}`);
       
-      // Stylish Output
       return bot.sendMessage(uid,
         `✅ <b>সফলভাবে ১০টি কার্ড তৈরি হয়েছে!</b>\n\n` +
         `📋 <b>ফরম্যাট:</b> <code>NUMBER|MM|YY|CVV</code>\n\n` +
@@ -588,7 +604,7 @@ bot.on("message", async msg => {
       for (const u of users) {
         const ok = await safeNotify(u.id, text, { parse_mode: "HTML" });
         if (ok) count++;
-        await new Promise(r => setTimeout(r, 50)); // Delay to prevent flood block
+        await new Promise(r => setTimeout(r, 50));
       }
       sessions.delete(uid);
       logAdmin(`Broadcasted message to ${count} users`);
@@ -645,7 +661,7 @@ bot.on("message", async msg => {
       setSetting(`sell_price_${session.coupon}`, price);
       sessions.delete(uid);
       logAdmin(`Updated $${session.coupon} sell price to ${fmt(price)}`);
-      const successMsg = await bot.sendMessage(uid, `✅ $${session.coupon} কুপনের Buy Rate সেট হয়েছে: ${price > 0 ? fmt(price) + '/টি' : 'বন্ধ'}`);
+      const successMsg = await bot.sendMessage(uid, `✅ $${session.coupon} কুপনের Buy Rate সেট হয়েছে: ${price > 0 ? fmt(price) : 'বন্ধ'}`);
       setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
       return;
     }
@@ -666,6 +682,22 @@ bot.on("message", async msg => {
       logAdmin(`Updated card make price to ${fmt(price)}`);
       const successMsg = await bot.sendMessage(uid, `✅ Card Make Price সেট হয়েছে: ${price > 0 ? fmt(price) : 'ফ্রি'}`);
       setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
+      return;
+    }
+
+    // --- Admin Add USA Address ---
+    if (session?.step === "admin_add_us_addr" && isAdmin(uid)) {
+      const lines = text.split("\n\n").map(l => l.trim()).filter(Boolean);
+      let count = 0;
+      db.transaction(() => {
+        for (const line of lines) {
+          db.prepare("INSERT INTO us_addresses(address_text, added_by) VALUES(?,?)").run(line, uid);
+          count++;
+        }
+      })();
+      sessions.delete(uid);
+      const successMsg = await bot.sendMessage(uid, `✅ ${count}টি USA Address যোগ করা হয়েছে।`);
+      setTimeout(() => { sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300); adminPanel(uid); }, 1000);
       return;
     }
 
@@ -815,7 +847,7 @@ bot.on("callback_query", async query => {
       const btns = [4,5,10,20,25].map(c => {
         const sp = Number(getSetting(`sell_price_${c}`));
         if (sp <= 0) return null;
-        return [{ text: `$${c} Coupon — ${fmt(sp)}/টি`, callback_data: `sell:coupon:${c}` }];
+        return [{ text: `$${c} Coupon — রেট: ৳${(sp/100).toFixed(2)}`, callback_data: `sell:coupon:${c}` }];
       }).filter(Boolean);
       btns.push([{ text: "🔙 Back", callback_data: "coupon_mode:back" }, { text: "❌ Close", callback_data: "msg:delete" }]);
       await answer(); deleteMsg();
@@ -841,7 +873,7 @@ bot.on("callback_query", async query => {
       if (sp <= 0) return answer("এই কুপন এখন কেনা হচ্ছে না।", true);
       sessions.set(uid, { step: "sell_qty", coupon: c, sellPrice: sp });
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>${fmt(sp)}</b>\n\nকতটি বিক্রি করতে চান?`);
+      return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>৳${(sp/100).toFixed(2)}</b>\n\nকতটি বিক্রি করতে চান?`, { parse_mode: "HTML" });
     }
 
     // === Buy Coupon ===
@@ -863,7 +895,7 @@ bot.on("callback_query", async query => {
       }
       sessions.set(uid, { step: "coupon_qty", coupon: coupon });
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `🎮 <b>$${coupon} কুপন</b> (স্টক: ${stock})\n\nআপনি কতগুলো কুপন নিতে চান? (শুধু সংখ্যা লিখুন)`);
+      return bot.sendMessage(uid, `🎮 <b>$${coupon} কুপন</b> (স্টক: ${stock})\n\nআপনি কতগুলো কুপন নিতে চান? (শুধু সংখ্যা লিখুন)`, { parse_mode: "HTML" });
     }
 
     // === Buy Options ===
@@ -938,7 +970,7 @@ bot.on("callback_query", async query => {
     if (data === "admin:bins") {
       const c = db.prepare("SELECT COUNT(*) AS n FROM bins").get().n;
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `🔢 <b>BIN & Card Management</b>\n\n📊 মোট BIN: <code>${c}</code>`, {
+      return bot.sendMessage(uid, `🔢 <b>BIN Management</b>\n\n📊 মোট BIN: <code>${c}</code>`, {
         parse_mode: "HTML",
         reply_markup: { inline_keyboard: [
           [{ text: "➕ Add BINs", callback_data: "bin:add" }],
@@ -995,6 +1027,30 @@ bot.on("callback_query", async query => {
       return;
     }
 
+    if (data === "admin:us_addresses") {
+      const c = db.prepare("SELECT COUNT(*) AS n FROM us_addresses").get().n;
+      await answer(); deleteMsg();
+      return bot.sendMessage(uid, `🇺🇸 <b>USA Address Management</b>\n\n📊 মোট Address: <code>${c}</code>`, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [
+          [{ text: "➕ Add Address", callback_data: "us_addr:add" }],
+          [{ text: "🗑 Delete All", callback_data: "us_addr:delall" }],
+          [{ text: "❌ Close", callback_data: "msg:delete" }]
+        ]}
+      });
+    }
+    if (data === "us_addr:add") {
+      const pMsg = await bot.sendMessage(uid, `➕ <b>Add USA Address</b>\n\nআপনি একসাথে একাধিক এড্রেস দিতে পারেন। প্রতিটা এড্রেসের মাঝে একটি খালি লাইন (Enter) দিন।\n\nউদাহরণ:\nJohn Doe\n123 Main St, New York, NY 10001\n\nJane Smith\n456 Oak Ave, Los Angeles, CA 90001`, { parse_mode: "HTML" });
+      sessions.set(uid, { step: "admin_add_us_addr", lastPromptId: pMsg.message_id });
+      await answer(); deleteMsg();
+      return;
+    }
+    if (data === "us_addr:delall") {
+      const c = db.prepare("DELETE FROM us_addresses").run().changes;
+      await answer(`Deleted ${c} Addresses`);
+      return deleteMsg();
+    }
+
     if (data === "list:sell_requests") {
       const rows = db.prepare("SELECT * FROM sell_requests WHERE status='PENDING' LIMIT 10").all();
       await answer(); deleteMsg();
@@ -1030,7 +1086,7 @@ bot.on("callback_query", async query => {
       await answer(); deleteMsg();
       const btns = [4,5,10,20,25].map(c => {
         const sp = Number(getSetting(`sell_price_${c}`));
-        return [{ text: `$${c} — ${sp > 0 ? fmt(sp) + '/টি' : 'বন্ধ'}`, callback_data: `admin:sell_price_set:${c}` }];
+        return [{ text: `$${c} — ${sp > 0 ? '৳' + (sp/100).toFixed(2) : 'বন্ধ'}`, callback_data: `admin:sell_price_set:${c}` }];
       });
       btns.push([{ text: "❌ Close", callback_data: "msg:delete" }]);
       return bot.sendMessage(uid, "💰 <b>কোন কুপনের Buy Rate সেট করবেন?</b>\n\n(0 = কেনা বন্ধ)", { parse_mode: "HTML", reply_markup: { inline_keyboard: btns } });
@@ -1043,7 +1099,6 @@ bot.on("callback_query", async query => {
       return;
     }
 
-    // === Other Admin Actions ===
     if (data === "admin:stats") {
       const users = db.prepare("SELECT COUNT(*) c FROM users").get().c;
       const dep = db.prepare("SELECT COUNT(*) c, SUM(amount) s FROM deposits WHERE status='APPROVED'").get();
@@ -1294,32 +1349,32 @@ bot.on("polling_error", e => console.error("Polling error:", e?.message || e));
 bot.getMe().then(async (info) => {
   console.log(`✅ BOT CONNECTED: @${info.username}`);
   
-  const adminMsg = `🚀 <b>বট সফলভাবে কানেক্টেড!</b>\n\n` +
-    `✨ <b>নতুন আপডেট:</b>\n` +
-    `• 🚀 Start / Restart বাটন যুক্ত হয়েছে (বার বার /start লিখতে হবে না)\n` +
-    `• 💳 Card Make এ ১৩ ডিজিটের BIN সাপোর্ট করবে\n` +
-    `• 🎨 বটের UI ও ডিজাইন সম্পূর্ণ নতুন ও প্রিমিয়াম\n` +
-    `• ⚡ বট স্পিড অপটিমাইজ করা হয়েছে\n\n` +
+  const adminMsg = `🚀 <b>বট সফলভাবে আপডেট হয়েছে!</b>\n\n` +
+    `✨ <b>নতুন ফিচার:</b>\n` +
+    `• 🚀 Start / Restart বাটন যুক্ত হয়েছে\n` +
+    `• 🇺🇸 USA Fake Address মেনু যুক্ত হয়েছে\n` +
+    `• কুপন রেট ডিসপ্লে ফিক্স করা হয়েছে\n` +
+    `• HTML Parse Error ফিক্স করা হয়েছে\n\n` +
     `⏳ সমস্ত ইউজারকে অটো-নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000));
 
   // Broadcast to all users on restart
   const users = db.prepare("SELECT id FROM users").all();
-  const updateMsg = `🚀 <b>বট আপডেট করা হয়েছে!</b>\n\n` +
+  const updateMsg = `🚀 <b>বট নতুন আপডেট পেয়েছে!</b>\n\n` +
     `✨ <b>নতুন ফিচার:</b>\n` +
-    `• 🔢 BIN Numbers এবং 💳 Card Make\n` +
-    `• 💰 Coupon Buy & Sell\n` +
-    `• 🎨 নতুন প্রিমিয়াম ডিজাইন ও দ্রুত পারফরম্যান্স\n\n` +
-    `👇 <i>নিচের মেনু থেকে যেকোনো কিছু ব্যবহার করতে পারেন। বার বার /start লিখতে হবে না!</i>`;
+    `• 🇺🇸 USA Fake Address যুক্ত হয়েছে\n` +
+    `• কুপন রেট ও ডিজাইন ফিক্স\n` +
+    `• বট এখন আগের চেয়ে দ্রুত কাজ করবে\n\n` +
+    `👇 <i>যেকোনো সমস্যায় 🚀 Start / Restart চাপুন। বার বার /start লিখতে হবে না!</i>`;
 
   let count = 0;
   for (const u of users) {
     try {
       await bot.sendMessage(u.id, updateMsg, { parse_mode: "HTML", ...getHome(u.id) });
       count++;
-      await new Promise(r => setTimeout(r, 40)); // Delay to prevent Telegram API block
-    } catch (e) {} // Ignore blocked users
+      await new Promise(r => setTimeout(r, 40)); 
+    } catch (e) {} 
   }
   console.log(`✅ Broadcast sent to ${count} users.`);
 });
