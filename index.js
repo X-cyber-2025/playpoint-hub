@@ -1,4 +1,4 @@
-// PLAY POINT QUEST HUB — Ultimate Code (AI + WhatsApp + Gen BIN)
+// PLAY POINT QUEST HUB — Final Ultimate Code (AI Fixed + Withdraw)
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS orders (
   reviewed_at TEXT, completed_at TEXT, FOREIGN KEY(uid) REFERENCES users(id), FOREIGN KEY(price_id) REFERENCES prices(id)
 );
 CREATE TABLE IF NOT EXISTS transactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, type TEXT NOT NULL CHECK(type IN ('DEPOSIT','PURCHASE','ADJUSTMENT')),
+  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, type TEXT NOT NULL CHECK(type IN ('DEPOSIT','PURCHASE','ADJUSTMENT','WITHDRAW')),
   amount INTEGER NOT NULL, ref TEXT NOT NULL UNIQUE, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(uid) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS quests (
@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS ai_keys (
   added_by INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, method TEXT NOT NULL CHECK(method IN ('bKash','Nagad')),
+  account_number TEXT NOT NULL, amount INTEGER NOT NULL CHECK(amount > 0),
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')),
+  reviewed_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT, FOREIGN KEY(uid) REFERENCES users(id)
+);
 `);
 
 // ===== Migrations =====
@@ -91,6 +97,7 @@ try { db.exec("ALTER TABLE sell_requests ADD COLUMN password TEXT DEFAULT '';");
 const defaultSettings = [
   ['rules_text', '📖 <b>RULES & REGULATIONS</b>\n\n1️⃣ সঠিক Transaction ID জমা দিন।\n2️⃣ Admin যাচাই করার পরই ব্যালেন্স যোগ হবে।\n3️⃣ PIN, OTP বা পাসওয়ার্ড কারও সাথে শেয়ার করবেন না।\n4️⃣ Coupon-এর দাম Admin নিশ্চিত করবেন।\n5️⃣ অর্ডার অনুমোদনের আগে ব্যালেন্স কাটা হবে না।'],
   ['support_text', '💬 Support-এর জন্য Admin-কে মেসেজ করুন।'],
+  ['min_withdraw', '5000'], // 50 Taka
   ['price_4', '0'], ['stock_4', '0'], ['price_5', '0'], ['stock_5', '0'],
   ['price_10', '0'], ['stock_10', '0'], ['price_20', '0'], ['stock_20', '0'], ['price_25', '0'], ['stock_25', '0'],
   ['sell_price_4', '0'], ['sell_price_5', '0'], ['sell_price_10', '0'], ['sell_price_20', '0'], ['sell_price_25', '0'],
@@ -203,21 +210,21 @@ const getHome = (uid) => {
     [{ text: "🎮 COD Coupons" }, { text: "🔢 BIN Numbers" }],
     [{ text: "💳 Card Make" }, { text: "🇺🇸 USA Fake Address" }],
     [{ text: "🤖 AI Assistant" }, { text: "🎯 Quest Complete" }],
-    [{ text: "📜 Transactions" }, { text: "💬 Support" }],
-    [{ text: "📞 WhatsApp Support" }, { text: "➕ Add Balance" }],
-    [{ text: "📖 Rules" }]
+    [{ text: "📜 Transactions" }, { text: "💸 Withdraw" }],
+    [{ text: "💬 Support" }, { text: "📞 WhatsApp Support" }],
+    [{ text: "➕ Add Balance" }, { text: "📖 Rules" }]
   ];
   if (isAdmin(uid)) keyboard.push([{ text: "🛠 Admin Menu" }]);
   return { reply_markup: { keyboard, resize_keyboard: true } };
 };
-const MENU_BUTTONS = new Set(["🚀 Start / Restart","💰 My Balance","➕ Add Balance","🎮 COD Coupons","🔢 BIN Numbers","💳 Card Make","🇺🇸 USA Fake Address","🤖 AI Assistant","🎯 Quest Complete","📜 Transactions","💬 Support","📞 WhatsApp Support","📖 Rules","🔄 Restart Bot","🛠 Admin Menu"]);
+const MENU_BUTTONS = new Set(["🚀 Start / Restart","💰 My Balance","➕ Add Balance","🎮 COD Coupons","🔢 BIN Numbers","💳 Card Make","🇺🇸 USA Fake Address","🤖 AI Assistant","🎯 Quest Complete","📜 Transactions","💸 Withdraw","💬 Support","📞 WhatsApp Support","📖 Rules","🔄 Restart Bot","🛠 Admin Menu"]);
 
 function adminPanel(chatId) {
   return bot.sendMessage(chatId, "🛠 <b>ADMIN CONTROL PANEL</b>\n\n━━━━━━━━━━━━━━━━━━\n<i>আপনি নিচের অপশনগুলো থেকে যেকোনো কিছু ম্যানেজ করতে পারেন।</i>", {
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: [
       [{ text: "📊 Statistics", callback_data: "admin:stats" }, { text: "📣 Broadcast", callback_data: "admin:broadcast" }],
-      [{ text: "📥 Deposits", callback_data: "list:deposits" }, { text: "💬 Price Requests", callback_data: "list:prices" }],
+      [{ text: "📥 Deposits", callback_data: "list:deposits" }, { text: "💸 Withdraw Requests", callback_data: "list:withdrawals" }],
       [{ text: "🛒 Pending Orders", callback_data: "list:orders" }, { text: "🔄 In Progress Orders", callback_data: "list:in_progress_orders" }],
       [{ text: "🎯 Pending Quests", callback_data: "list:quests" }, { text: "🔄 In Progress Quests", callback_data: "list:in_progress_quests" }],
       [{ text: "🆘 Support Inbox", callback_data: "list:support" }, { text: "👥 All Users", callback_data: "list:users" }],
@@ -362,6 +369,14 @@ bot.on("message", async msg => {
       if (text === "➕ Add Balance") {
         return bot.sendMessage(uid, "💳 <b>পেমেন্ট মাধ্যম বেছে নিন:</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "🔴 bKash", callback_data: "deposit:method:bKash" }], [{ text: "🟠 Nagad", callback_data: "deposit:method:Nagad" }], [{ text: "❌ Close", callback_data: "msg:delete" }]] } });
       }
+      if (text === "💸 Withdraw") {
+        const minW = Number(getSetting('min_withdraw'));
+        if (balanceOf(uid) < minW) {
+          return bot.sendMessage(uid, `❌ <b>আপনার পর্যাপ্ত ব্যালেন্স নেই।</b>\n\nমিনিমাম উইথড্র: <code>${fmt(minW)}</code>\nআপনার আছে: <code>${fmt(balanceOf(uid))}</code>`, { parse_mode: "HTML", ...getHome(uid) })
+            .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
+        }
+        return bot.sendMessage(uid, "💸 <b>উইথড্র করার মাধ্যম বেছে নিন:</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "🔴 bKash", callback_data: "withdraw:method:bKash" }], [{ text: "🟠 Nagad", callback_data: "withdraw:method:Nagad" }], [{ text: "❌ Close", callback_data: "msg:delete" }]] } });
+      }
       if (text === "🎯 Quest Complete") {
         sessions.set(uid, { step: "quest_screenshot" });
         return bot.sendMessage(uid, "🎯 <b>QUEST COMPLETE</b>\n\nকুইস্ট সম্পন্ন করতে ১০৳ ফি দিতে হবে।\n\n📸 অ্যাডমিনের নম্বরে ১০৳ পাঠিয়ে পেমেন্টের স্ক্রিনশট এখানে পাঠান।\n\n❌ <i>বাতিল করতে /cancel লিখুন।</i>", { parse_mode: "HTML" });
@@ -450,28 +465,47 @@ bot.on("message", async msg => {
       return bot.sendMessage(uid, "🤖 <b>আমি আপনার কথা বুঝতে পারিনি।</b>\n\n<i>নিচের মেনু থেকে অপশন বেছে নিন অথবা নতুন করে শুরু করতে 🚀 Start / Restart চাপুন।</i>", { parse_mode: "HTML", ...getHome(uid) });
     }
 
-    // === AI PROMPT ===
+    // === AI PROMPT (Official Gemini API) ===
     if (session?.step === "ai_prompt") {
       sessions.delete(uid);
       const typingMsg = await bot.sendMessage(uid, "⏳ <b>AI ভাবছে...</b>", { parse_mode: "HTML" });
       
       try {
         const keyRow = db.prepare("SELECT api_key FROM ai_keys ORDER BY RANDOM() LIMIT 1").get();
-        if (!keyRow) throw new Error("No key");
         
+        if (!keyRow || !keyRow.api_key) {
+           bot.deleteMessage(uid, typingMsg.message_id).catch(() => {});
+           return bot.sendMessage(uid, "❌ <b>অ্যাডমিন প্যানেলে কোনো API Key সেট করা নেই।</b>", { parse_mode: "HTML", ...getHome(uid) });
+        }
+
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${keyRow.api_key}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: text }] }] })
+          body: JSON.stringify({ 
+            contents: [{ parts: [{ text: text }] }] 
+          })
         });
-        const data = await res.json();
-        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না।";
         
+        const data = await res.json();
+        
+        let aiReply = "দুঃখিত, আমি এই মুহূর্তে উত্তর দিতে পারছি না।";
+        if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts[0]) {
+           aiReply = data.candidates[0].content.parts[0].text;
+        } else if (data.error) {
+           console.error("Gemini Error:", data.error.message);
+           aiReply = "API Key-তে সমস্যা আছে। অ্যাডমিনকে জানান।";
+        }
+
         bot.deleteMessage(uid, typingMsg.message_id).catch(() => {});
-        return bot.sendMessage(uid, `🤖 <b>AI উত্তর:</b>\n\n${esc(reply)}`, { parse_mode: "HTML", ...getHome(uid) });
+        
+        if (aiReply.length > 4000) aiReply = aiReply.substring(0, 3990) + "...";
+        
+        return bot.sendMessage(uid, `🤖 <b>AI উত্তর:</b>\n\n${esc(aiReply)}`, { parse_mode: "HTML", ...getHome(uid) });
+        
       } catch (err) {
+        console.error("AI Fetch Error:", err);
         bot.deleteMessage(uid, typingMsg.message_id).catch(() => {});
-        return bot.sendMessage(uid, "❌ <b>AI সিস্টেমে সমস্যা হচ্ছে।</b>\n\nঅনুগ্রহ করে কিছুক্ষণ পর চেষ্টা করুন।", { parse_mode: "HTML", ...getHome(uid) });
+        return bot.sendMessage(uid, "❌ <b>সার্ভারে সমস্যা হচ্ছে।</b>\n\nঅনুগ্রহ করে একটু পর চেষ্টা করুন।", { parse_mode: "HTML", ...getHome(uid) });
       }
     }
 
@@ -513,6 +547,50 @@ bot.on("message", async msg => {
         `⚠️ <i>কার্ডগুলো কপি করে সঠিকভাবে ব্যবহার করুন।</i>`,
         { parse_mode: "HTML", ...getHome(uid) }
       );
+    }
+
+    // === Withdraw Flow ===
+    if (session?.step === "withdraw_number") {
+      if (text.length < 11 || isNaN(Number(text))) {
+        return bot.sendMessage(uid, "⚠️ <b>সঠিক ১১ ডিজিটের মোবাইল নাম্বার দিন।</b>", { parse_mode: "HTML" })
+          .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
+      session.account = text;
+      session.step = "withdraw_amount";
+      const minW = Number(getSetting('min_withdraw'));
+      return bot.sendMessage(uid, `💸 <b>কত টাকা তুলতে চান?</b>\n\nমিনিমাম: ${fmt(minW)}\nআপনার ব্যালেন্স: ${fmt(balanceOf(uid))}\n\n<i>শুধু সংখ্যা লিখুন:</i>`, { parse_mode: "HTML" });
+    }
+
+    if (session?.step === "withdraw_amount") {
+      const amount = parseMoney(text);
+      const minW = Number(getSetting('min_withdraw'));
+      if (!amount || amount < minW) {
+        return bot.sendMessage(uid, `⚠️ <b>মিনিমাম ${fmt(minW)} বা তার বেশি লিখুন।</b>`, { parse_mode: "HTML" })
+          .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
+      if (balanceOf(uid) < amount) {
+        return bot.sendMessage(uid, "❌ <b>আপনার পর্যাপ্ত ব্যালেন্স নেই।</b>", { parse_mode: "HTML" })
+          .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      }
+
+      const res = db.transaction(() => {
+        db.prepare("UPDATE users SET balance=balance-? WHERE id=?").run(amount, uid);
+        const ins = db.prepare("INSERT INTO withdrawals(uid, method, account_number, amount) VALUES(?,?,?,?)").run(uid, session.method, session.account, amount);
+        db.prepare(`INSERT INTO transactions(uid,type,amount,ref,note) VALUES(?,?,?,?,?)`).run(uid, "WITHDRAW", -amount, `WTH-${ins.lastInsertRowid}`, `Withdraw via ${session.method}`);
+        return { id: ins.lastInsertRowid };
+      })();
+      sessions.delete(uid);
+      
+      bot.sendMessage(uid, `✅ <b>Withdraw Request #${res.id} সফলভাবে জমা হয়েছে!</b>\n\n` +
+        `💳 <b>মাধ্যম:</b> ${session.method}\n` +
+        `📱 <b>নম্বর:</b> <code>${esc(session.account)}</code>\n` +
+        `💵 <b>পরিমাণ:</b> <code>${fmt(amount)}</code>\n\n` +
+        `⏳ <i>অ্যাডমিন ম্যানুয়ালি টাকা পাঠিয়ে এটি অ্যাপ্রুভ করবেন।</i>`, { parse_mode: "HTML", ...getHome(uid) })
+        .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 8000));
+        
+      return sendAdmin(`💸 <b>NEW WITHDRAW REQUEST #${res.id}</b>\n👤 ${esc(displayName(msg.from))}\n🆔 <code>${uid}</code>\n\nমাধ্যম: ${session.method}\nনম্বর: <code>${esc(session.account)}</code>\nপরিমাণ: <b>${fmt(amount)}</b>\n\n⚠️ <i>টাকা পাঠিয়ে Approve করুন।</i>`, {
+        inline_keyboard: [[{ text: "✅ Approve", callback_data: `withdraw:approve:${res.id}` }, { text: "❌ Reject", callback_data: `withdraw:reject:${res.id}` }], [{ text: "🗑 Delete", callback_data: "msg:delete" }]]
+      });
     }
 
     // === Sell Flow ===
@@ -955,6 +1033,14 @@ bot.on("callback_query", async query => {
       return bot.sendMessage(uid, `💳 <b>${method} ডিপোজিট</b>\n\n${num ? `📞 <b>নম্বর:</b> <code>${num}</code>\n\n` : ''}টাকা পাঠিয়ে কত টাকা পাঠিয়েছেন তা লিখুন:`, { parse_mode: "HTML" });
     }
 
+    // === Withdraw Method Selection ===
+    if (data.startsWith("withdraw:method:")) {
+      const method = data.split(":")[2];
+      sessions.set(uid, { step: "withdraw_number", method });
+      await answer(); deleteMsg();
+      return bot.sendMessage(uid, `💸 <b>${method} উইথড্র</b>\n\nআপনার ${method} এর <b>একাউন্ট নম্বর</b> দিন:`, { parse_mode: "HTML" });
+    }
+
     // === Coupon Mode Selection ===
     if (data === "coupon_mode:buy") {
       const menu = { reply_markup: { inline_keyboard: [
@@ -1189,6 +1275,36 @@ bot.on("callback_query", async query => {
       const c = db.prepare("DELETE FROM us_addresses").run().changes;
       await answer(`Deleted ${c} Addresses`);
       return deleteMsg();
+    }
+
+    if (data === "list:withdrawals") {
+      const rows = db.prepare("SELECT * FROM withdrawals WHERE status='PENDING' LIMIT 10").all();
+      await answer(); deleteMsg();
+      if (!rows.length) return bot.sendMessage(uid, "Pending Withdraw Request নেই।")
+        .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+      rows.forEach(r => bot.sendMessage(uid, `💸 <b>Withdraw #${r.id}</b>\nUser: <code>${r.uid}</code>\n${r.method}: <code>${r.account_number}</code>\nAmount: <b>${fmt(r.amount)}</b>`, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `withdraw:approve:${r.id}` }, { text: "❌ Reject", callback_data: `withdraw:reject:${r.id}` }], [{ text: "🗑 Delete", callback_data: "msg:delete" }]] }
+      }));
+      return;
+    }
+    if (data.startsWith("withdraw:approve:") || data.startsWith("withdraw:reject:")) {
+      const [, action, rid] = data.split(":");
+      const res = db.transaction(() => {
+        const w = db.prepare("SELECT * FROM withdrawals WHERE id=? AND status='PENDING'").get(rid);
+        if (!w) return { err: 1 };
+        if (action === "reject") {
+          db.prepare("UPDATE users SET balance=balance+? WHERE id=?").run(w.amount, w.uid);
+          db.prepare(`INSERT INTO transactions(uid,type,amount,ref,note) VALUES(?,?,?,?,?)`).run(w.uid, "DEPOSIT", w.amount, `WTH-REF-${rid}`, `Withdraw Refund`);
+        }
+        db.prepare("UPDATE withdrawals SET status=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(action === "approve" ? "APPROVED" : "REJECTED", uid, rid);
+        return { w };
+      })();
+      if (res.err) return answer("Already reviewed", true);
+      await answer("Done"); logAdmin(`Withdraw #${rid} ${action}`);
+      editAndAutoDelete(chatId, msgId, action === "approve" ? `✅ <b>Withdraw #${rid} APPROVED</b>` : `❌ <b>Withdraw #${rid} REJECTED & Refunded</b>`);
+      safeNotify(res.w.uid, action === "approve" ? `✅ <b>আপনার Withdraw #${rid} সফল হয়েছে!</b>\n\nটাকা আপনার ${res.w.method} এ পাঠানো হয়েছে।` : `❌ <b>আপনার Withdraw #${rid} বাতিল করা হয়েছে।</b>\n\nটাকা আপনার ব্যালেন্সে ফেরত দেওয়া হয়েছে।`, { parse_mode: "HTML", ...getHome(res.w.uid) });
+      return;
     }
 
     if (data === "list:sell_requests") {
@@ -1491,10 +1607,9 @@ bot.getMe().then(async (info) => {
   
   const adminMsg = `🚀 <b>বট সফলভাবে আপডেট হয়েছে!</b>\n\n` +
     `✨ <b>নতুন আপডেট:</b>\n` +
-    `• 🤖 AI Assistant (Gemini API) যুক্ত হয়েছে\n` +
-    `• 💳 BIN Make এখন <code>.gen</code> দিয়ে কাজ করবে\n` +
-    `• 📞 কুপন বাই/সেল এ WhatsApp অপশন\n` +
-    `• 🔄 ইউজারের মেনু ডিসঅ্যাপিয়ার সমস্যা ফিক্সড\n\n` +
+    `• 💸 Withdraw সিস্টেম যুক্ত হয়েছে (ম্যানুয়াল অ্যাপ্রুভাল)\n` +
+    `• 🤖 অফিসিয়াল Google Gemini API সাপোর্ট\n` +
+    `• 💳 BIN Make (.gen) ফরম্যাট\n\n` +
     `⏳ সমস্ত ইউজারকে নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000));
@@ -1502,10 +1617,9 @@ bot.getMe().then(async (info) => {
   const users = db.prepare("SELECT id FROM users").all();
   const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
     `✨ <b>নতুন সুবিধা:</b>\n` +
-    `• 🤖 AI Assistant যুক্ত হয়েছে\n` +
-    `• 💳 নতুন BIN ফরম্যাট (.gen)\n` +
-    `• 📞 কুপন এ WhatsApp সাপোর্ট\n\n` +
-    `👇 <i>মেনু থেকে ব্যবহার করুন।</i>`;
+    `• 💸 এখন থেকে সরাসরি টাকা তুলতে পারবেন (Withdraw)\n` +
+    `• 🤖 AI Assistant ফিক্স করা হয়েছে\n\n` +
+    `👇 <i>যেকোনো সমস্যায় 🚀 Start / Restart চাপুন।</i>`;
 
   let count = 0;
   for (const u of users) {
