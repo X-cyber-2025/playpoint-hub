@@ -1,4 +1,4 @@
-// PLAY POINT QUEST HUB — Ultimate Final Code (Smart Text & Number Parser)
+// PLAY POINT QUEST HUB — Ultimate Final Code (Custom Price Text)
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -83,16 +83,16 @@ CREATE TABLE IF NOT EXISTS ai_keys (
 const defaultSettings = [
   ['rules_text', '📖 <b>RULES & REGULATIONS</b>\n\n1️⃣ সঠিক তথ্য জমা দিন।\n2️⃣ Admin যাচাই করার পরই সার্ভিস দেওয়া হবে।\n3️⃣ PIN, OTP বা পাসওয়ার্ড কারও সাথে শেয়ার করবেন না।\n4️⃣ Coupon-এর দাম Admin নিশ্চিত করবেন।'],
   ['support_text', '💬 Support-এর জন্য Admin-কে মেসেজ করুন।'],
-  ['buy_price_4', '0'], ['stock_4', '0'], ['buy_status_4', '1'],
-  ['buy_price_5', '0'], ['stock_5', '0'], ['buy_status_5', '1'],
-  ['buy_price_10', '0'], ['stock_10', '0'], ['buy_status_10', '1'],
-  ['buy_price_20', '0'], ['stock_20', '0'], ['buy_status_20', '1'],
-  ['buy_price_25', '0'], ['stock_25', '0'], ['buy_status_25', '1'],
-  ['sell_price_4', '0'], ['sell_status_4', '1'],
-  ['sell_price_5', '0'], ['sell_status_5', '1'],
-  ['sell_price_10', '0'], ['sell_status_10', '1'],
-  ['sell_price_20', '0'], ['sell_status_20', '1'],
-  ['sell_price_25', '0'], ['sell_status_25', '1'],
+  ['buy_price_4', '0'], ['buy_price_val_4', '0'], ['stock_4', '0'], ['buy_status_4', '1'],
+  ['buy_price_5', '0'], ['buy_price_val_5', '0'], ['stock_5', '0'], ['buy_status_5', '1'],
+  ['buy_price_10', '0'], ['buy_price_val_10', '0'], ['stock_10', '0'], ['buy_status_10', '1'],
+  ['buy_price_20', '0'], ['buy_price_val_20', '0'], ['stock_20', '0'], ['buy_status_20', '1'],
+  ['buy_price_25', '0'], ['buy_price_val_25', '0'], ['stock_25', '0'], ['buy_status_25', '1'],
+  ['sell_price_4', '0'], ['sell_price_val_4', '0'], ['sell_status_4', '1'],
+  ['sell_price_5', '0'], ['sell_price_val_5', '0'], ['sell_status_5', '1'],
+  ['sell_price_10', '0'], ['sell_price_val_10', '0'], ['sell_status_10', '1'],
+  ['sell_price_20', '0'], ['sell_price_val_20', '0'], ['sell_status_20', '1'],
+  ['sell_price_25', '0'], ['sell_price_val_25', '0'], ['sell_status_25', '1'],
   ['card_make_price', '0']
 ];
 defaultSettings.forEach(([k, v]) => db.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)").run(k, v));
@@ -115,7 +115,7 @@ function toEnglishDigits(str) {
   return String(str).replace(/[০-৯]/g, d => english[bengali.indexOf(d)]);
 }
 
-// স্মার্ট নাম্বার এক্সট্রাক্টর (যেকোনো লেখা থেকে দাম বা সংখ্যা বের করবে)
+// স্মার্ট নাম্বার এক্সট্রাক্টর
 function parseSmartMoney(text) {
   let clean = toEnglishDigits(text).toLowerCase();
   clean = clean.replace(/(tk|taka|৳|\$|bdt)/gi, '');
@@ -551,7 +551,7 @@ bot.on("message", async msg => {
 
     // Buy Flow
     if (session?.step === "buy_qty") {
-      const qty = parseSmartInteger(text); // স্মার্ট নাম্বার পার্সার
+      const qty = parseSmartInteger(text); 
       if (!qty || qty <= 0 || qty > 100) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন</b> (যেমন: 1, 2, 5)।", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -573,7 +573,7 @@ bot.on("message", async msg => {
 
     // Sell Flow
     if (session?.step === "sell_qty") {
-      const qty = parseSmartInteger(text); // স্মার্ট নাম্বার পার্সার
+      const qty = parseSmartInteger(text); 
       if (!qty || qty <= 0 || qty > 1000) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন</b> (যেমন: 1, 2, 5)।", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -674,37 +674,41 @@ bot.on("message", async msg => {
 
     // Admin Set Buy Price
     if (session?.step === "admin_set_buy_price" && isAdmin(uid)) {
-      let price = parseSmartMoney(text); // স্মার্ট মানি পার্সার
-      if (!price) {
-        return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম লিখুন।</b> (যেমন: ১০০, 100tk, ek shoto)", { parse_mode: "HTML" })
+      const priceText = rawText.trim(); // যেই লেখা দিবে তাই সেভ হবে
+      if (!priceText) {
+        return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম বা লেখা দিন।</b>", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
       }
-      setSetting(`buy_price_${session.coupon}`, price);
+      const numericPrice = parseSmartMoney(text) || 0; // হিসাবের জন্য নাম্বার আলাদা করে রাখা
+      setSetting(`buy_price_${session.coupon}`, priceText);
+      setSetting(`buy_price_val_${session.coupon}`, numericPrice);
       sessions.delete(uid);
-      logAdmin(`Updated $${session.coupon} coupon buy price to ${fmt(price)}`);
-      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের কেনার দাম সেট হয়েছে:</b> ${fmt(price)}`, { parse_mode: "HTML" }).catch(() => {});
+      logAdmin(`Updated $${session.coupon} coupon buy price to ${priceText}`);
+      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের কেনার দাম সেট হয়েছে:</b> ${priceText}`, { parse_mode: "HTML" }).catch(() => {});
       if (successMsg) setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
       return;
     }
 
     // Admin Set Sell Price
     if (session?.step === "admin_set_sell_price" && isAdmin(uid)) {
-      let price = parseSmartMoney(text); // স্মার্ট মানি পার্সার
-      if (!price) {
-        return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম লিখুন।</b> (যেমন: ১০০, 100tk, ek shoto)", { parse_mode: "HTML" })
+      const priceText = rawText.trim(); // যেই লেখা দিবে তাই সেভ হবে
+      if (!priceText) {
+        return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম বা লেখা দিন।</b>", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
       }
-      setSetting(`sell_price_${session.coupon}`, price);
+      const numericPrice = parseSmartMoney(text) || 0;
+      setSetting(`sell_price_${session.coupon}`, priceText);
+      setSetting(`sell_price_val_${session.coupon}`, numericPrice);
       sessions.delete(uid);
-      logAdmin(`Updated $${session.coupon} coupon sell price to ${fmt(price)}`);
-      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের বিক্রির দাম সেট হয়েছে:</b> ${fmt(price)}`, { parse_mode: "HTML" }).catch(() => {});
+      logAdmin(`Updated $${session.coupon} coupon sell price to ${priceText}`);
+      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের বিক্রির দাম সেট হয়েছে:</b> ${priceText}`, { parse_mode: "HTML" }).catch(() => {});
       if (successMsg) setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
       return;
     }
 
     // Admin Set Stock
     if (session?.step === "admin_set_stock" && isAdmin(uid)) {
-      const stock = parseSmartInteger(text); // স্মার্ট ইন্টিজার পার্সার
+      const stock = parseSmartInteger(text); 
       if (stock === null || stock < 0) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন।</b>", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -730,7 +734,6 @@ bot.on("message", async msg => {
 
     // Admin Add USA Address
     if (session?.step === "admin_add_us_addr" && isAdmin(uid)) {
-      // এখানে যেকোনো লেখা, স্পেশাল ক্যারেক্টার, বাংলা, ইংলিশ সবই কাজ করবে
       const lines = rawText.split("\n\n").map(l => l.trim()).filter(Boolean);
       let count = 0;
       db.transaction(() => { for (const line of lines) { db.prepare("INSERT INTO us_addresses(address_text, added_by) VALUES(?,?)").run(line, uid); count++; } })();
@@ -848,9 +851,9 @@ bot.on("callback_query", async query => {
       const coupons = [4, 5, 10, 20, 25];
       const btns = [];
       coupons.forEach(c => {
-        const sp = Number(getSetting(`sell_price_${c}`));
-        if (getSetting(`sell_status_${c}`) === '1' && sp > 0) {
-          btns.push([{ text: `$${c} কুপন — রেট: ৳${(sp/100).toFixed(2)}`, callback_data: `sell:coupon:${c}` }]);
+        const spText = getSetting(`sell_price_${c}`) || '0';
+        if (getSetting(`sell_status_${c}`) === '1' && spText !== '0') {
+          btns.push([{ text: `$${c} কুপন — রেট: ${spText}`, callback_data: `sell:coupon:${c}` }]);
         }
       });
       btns.push([{ text: "🔙 মেইন মেনু", callback_data: "main_menu" }, { text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]);
@@ -874,18 +877,20 @@ bot.on("callback_query", async query => {
     // Buy/Sell Coupon
     if (data.startsWith("buy:coupon:")) {
       const coupon = Number(data.split(":")[2]);
-      const price = Number(getSetting(`buy_price_${coupon}`)) || 0;
-      sessions.set(uid, { step: "buy_qty", coupon: coupon, price: price });
+      const priceText = getSetting(`buy_price_${coupon}`) || '0';
+      const priceVal = Number(getSetting(`buy_price_val_${coupon}`)) || 0;
+      sessions.set(uid, { step: "buy_qty", coupon: coupon, price: priceVal, displayPrice: priceText });
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `🎮 <b>$${coupon} কুপন</b>\n\n<i>আপনি কতগুলো কুপন কিনতে চান? (শুধু সংখ্যা লিখুন)</i>`, { parse_mode: "HTML" }).catch(() => {});
+      return bot.sendMessage(uid, `🎮 <b>$${coupon} কুপন</b>\n\nদাম: <b>${priceText}</b>\n\n<i>আপনি কতগুলো কুপন কিনতে চান? (শুধু সংখ্যা লিখুন)</i>`, { parse_mode: "HTML" }).catch(() => {});
     }
     if (data.startsWith("sell:coupon:")) {
       const c = Number(data.split(":")[2]);
-      const sp = Number(getSetting(`sell_price_${c}`));
-      if (sp <= 0) return answer("এই কুপন এখন কেনা হচ্ছে না।", true);
-      sessions.set(uid, { step: "sell_qty", coupon: c, sellPrice: sp });
+      const spText = getSetting(`sell_price_${c}`) || '0';
+      const spVal = Number(getSetting(`sell_price_val_${c}`)) || 0;
+      if (spVal <= 0 && spText === '0') return answer("এই কুপন এখন কেনা হচ্ছে না।", true);
+      sessions.set(uid, { step: "sell_qty", coupon: c, sellPrice: spVal, displaySellPrice: spText });
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>৳${(sp/100).toFixed(2)}</b>\n\n<i>কতটি বিক্রি করতে চান? (শুধু সংখ্যা লিখুন)</i>`, { parse_mode: "HTML" }).catch(() => {});
+      return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>${spText}</b>\n\n<i>কতটি বিক্রি করতে চান? (শুধু সংখ্যা লিখুন)</i>`, { parse_mode: "HTML" }).catch(() => {});
     }
 
     // ==========================================
@@ -915,11 +920,11 @@ bot.on("callback_query", async query => {
       const c = Number(data.split(":")[2]);
       const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
-      const bPrice = getSetting(`buy_price_${c}`);
-      const sPrice = getSetting(`sell_price_${c}`);
+      const bPrice = getSetting(`buy_price_${c}`) || '0';
+      const sPrice = getSetting(`sell_price_${c}`) || '0';
       
       await answer(); deleteMsg();
-      return bot.sendMessage(uid, `🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice > 0 ? fmt(bPrice) : 'সেট করা নেই'}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice > 0 ? fmt(sPrice) : 'সেট করা নেই'}</code>`, {
+      return bot.sendMessage(uid, `🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice}</code>`, {
         parse_mode: "HTML",
         reply_markup: { inline_keyboard: [
           [{ text: `📥 কেনা ${bStat}`, callback_data: `admin:toggle_buy:${c}` }, { text: "💵 কেনার দাম", callback_data: `admin:set_buy_price:${c}` }],
@@ -937,9 +942,9 @@ bot.on("callback_query", async query => {
       
       const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
-      const bPrice = getSetting(`buy_price_${c}`);
-      const sPrice = getSetting(`sell_price_${c}`);
-      return bot.editMessageText(`🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice > 0 ? fmt(bPrice) : 'সেট করা নেই'}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice > 0 ? fmt(sPrice) : 'সেট করা নেই'}</code>`, {
+      const bPrice = getSetting(`buy_price_${c}`) || '0';
+      const sPrice = getSetting(`sell_price_${c}`) || '0';
+      return bot.editMessageText(`🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice}</code>`, {
         chat_id: chatId, message_id: msgId, parse_mode: "HTML",
         reply_markup: { inline_keyboard: [
           [{ text: `📥 কেনা ${bStat}`, callback_data: `admin:toggle_buy:${c}` }, { text: "💵 কেনার দাম", callback_data: `admin:set_buy_price:${c}` }],
@@ -957,9 +962,9 @@ bot.on("callback_query", async query => {
       
       const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
-      const bPrice = getSetting(`buy_price_${c}`);
-      const sPrice = getSetting(`sell_price_${c}`);
-      return bot.editMessageText(`🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice > 0 ? fmt(bPrice) : 'সেট করা নেই'}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice > 0 ? fmt(sPrice) : 'সেট করা নেই'}</code>`, {
+      const bPrice = getSetting(`buy_price_${c}`) || '0';
+      const sPrice = getSetting(`sell_price_${c}`) || '0';
+      return bot.editMessageText(`🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice}</code>`, {
         chat_id: chatId, message_id: msgId, parse_mode: "HTML",
         reply_markup: { inline_keyboard: [
           [{ text: `📥 কেনা ${bStat}`, callback_data: `admin:toggle_buy:${c}` }, { text: "💵 কেনার দাম", callback_data: `admin:set_buy_price:${c}` }],
@@ -971,13 +976,13 @@ bot.on("callback_query", async query => {
 
     if (data.startsWith("admin:set_buy_price:")) {
       const c = Number(data.split(":")[2]);
-      const pMsg = await bot.sendMessage(uid, `💵 <b>$${c} কুপনের নতুন কেনার দাম (BDT) লিখুন:</b>`, { parse_mode: "HTML" }).catch(() => {});
+      const pMsg = await bot.sendMessage(uid, `💵 <b>$${c} কুপনের নতুন কেনার দাম বা নোট লিখুন (যেমন: ১০০ টাকা, 100tk):</b>`, { parse_mode: "HTML" }).catch(() => {});
       if (pMsg) sessions.set(uid, { step: "admin_set_buy_price", coupon: c, lastPromptId: pMsg.message_id });
       await answer(); deleteMsg(); return;
     }
     if (data.startsWith("admin:set_sell_price:")) {
       const c = Number(data.split(":")[2]);
-      const pMsg = await bot.sendMessage(uid, `💰 <b>$${c} কুপনের নতুন বিক্রির দাম (BDT) লিখুন:</b>`, { parse_mode: "HTML" }).catch(() => {});
+      const pMsg = await bot.sendMessage(uid, `💰 <b>$${c} কুপনের নতুন বিক্রির দাম বা নোট লিখুন (যেমন: ১০০ টাকা, 100tk):</b>`, { parse_mode: "HTML" }).catch(() => {});
       if (pMsg) sessions.set(uid, { step: "admin_set_sell_price", coupon: c, lastPromptId: pMsg.message_id });
       await answer(); deleteMsg(); return;
     }
