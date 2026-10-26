@@ -1,4 +1,4 @@
-// PLAY POINT QUEST HUB — Ultimate Bengali Admin Panel & Manual Buy/Sell (WhatsApp Only)
+// PLAY POINT QUEST HUB — Ultimate Bengali Admin Panel & Manual Buy/Sell (With Advanced Controls)
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
@@ -22,19 +22,13 @@ db.pragma("foreign_keys = ON");
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '',
-  balance INTEGER NOT NULL DEFAULT 0, is_banned INTEGER DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS prices (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, coupon INTEGER NOT NULL CHECK(coupon IN (4,5,10,20,25)),
-  price INTEGER, status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING','SENT','CONFIRMED','DECLINED','ORDERED')),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(uid) REFERENCES users(id)
+  is_banned INTEGER DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS orders (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, price_id INTEGER NOT NULL UNIQUE, coupon INTEGER NOT NULL,
-  qty INTEGER DEFAULT 1, amount INTEGER NOT NULL CHECK(amount > 0), status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','PROCESSING','COMPLETED','REJECTED')),
-  delivery_method TEXT, delivery_info TEXT, reviewed_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  reviewed_at TEXT, completed_at TEXT, FOREIGN KEY(uid) REFERENCES users(id), FOREIGN KEY(price_id) REFERENCES prices(id)
+  id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, coupon INTEGER NOT NULL,
+  qty INTEGER DEFAULT 1, amount INTEGER NOT NULL CHECK(amount > 0), status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','COMPLETED','REJECTED')),
+  delivery_method TEXT, delivery_info TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT, FOREIGN KEY(uid) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS quests (
   id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, screenshot TEXT NOT NULL, gmail TEXT NOT NULL DEFAULT '',
@@ -50,7 +44,7 @@ CREATE TABLE IF NOT EXISTS sell_requests (
   qty INTEGER NOT NULL CHECK(qty > 0), amount INTEGER NOT NULL CHECK(amount > 0),
   gmail TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')),
-  reviewed_by INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT,
   FOREIGN KEY(uid) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS bins (
@@ -75,12 +69,18 @@ CREATE TABLE IF NOT EXISTS ai_keys (
 const defaultSettings = [
   ['rules_text', '📖 <b>নিয়মাবলী</b>\n\n1️⃣ সঠিক তথ্য জমা দিন।\n2️⃣ Admin যাচাই করার পরই সার্ভিস দেওয়া হবে।\n3️⃣ PIN, OTP বা পাসওয়ার্ড কারও সাথে শেয়ার করবেন না।\n4️⃣ Coupon-এর দাম Admin নিশ্চিত করবেন।'],
   ['support_text', '💬 Support-এর জন্য Admin-কে মেসেজ করুন।'],
-  ['price_4', '0'], ['stock_4', '0'], ['buy_enabled_4', '1'], ['sell_enabled_4', '1'],
-  ['price_5', '0'], ['stock_5', '0'], ['buy_enabled_5', '1'], ['sell_enabled_5', '1'],
-  ['price_10', '0'], ['stock_10', '0'], ['buy_enabled_10', '1'], ['sell_enabled_10', '1'],
-  ['price_20', '0'], ['stock_20', '0'], ['buy_enabled_20', '1'], ['sell_enabled_20', '1'],
-  ['price_25', '0'], ['stock_25', '0'], ['buy_enabled_25', '1'], ['sell_enabled_25', '1'],
-  ['sell_price_4', '0'], ['sell_price_5', '0'], ['sell_price_10', '0'], ['sell_price_20', '0'], ['sell_price_25', '0'],
+  // Buy Settings
+  ['buy_price_4', '0'], ['stock_4', '0'], ['buy_status_4', '1'],
+  ['buy_price_5', '0'], ['stock_5', '0'], ['buy_status_5', '1'],
+  ['buy_price_10', '0'], ['stock_10', '0'], ['buy_status_10', '1'],
+  ['buy_price_20', '0'], ['stock_20', '0'], ['buy_status_20', '1'],
+  ['buy_price_25', '0'], ['stock_25', '0'], ['buy_status_25', '1'],
+  // Sell Settings
+  ['sell_price_4', '0'], ['sell_status_4', '1'],
+  ['sell_price_5', '0'], ['sell_status_5', '1'],
+  ['sell_price_10', '0'], ['sell_status_10', '1'],
+  ['sell_price_20', '0'], ['sell_status_20', '1'],
+  ['sell_price_25', '0'], ['sell_status_25', '1'],
   ['card_make_price', '0']
 ];
 defaultSettings.forEach(([k, v]) => db.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)").run(k, v));
@@ -201,7 +201,7 @@ function adminPanel(chatId) {
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: [
       [{ text: "📊 পরিসংখ্যান", callback_data: "admin:stats" }, { text: "📣 ব্রডকাস্ট", callback_data: "admin:broadcast" }],
-      [{ text: "🎮 কুপন কন্ট্রোল", callback_data: "admin:coupon_control" }, { text: "🛒 পেন্ডিং অর্ডার", callback_data: "list:orders" }],
+      [{ text: "🎮 কুপন ম্যানেজমেন্ট", callback_data: "admin:coupon_control" }, { text: "🛒 পেন্ডিং অর্ডার", callback_data: "list:orders" }],
       [{ text: "🎯 পেন্ডিং কুইস্ট", callback_data: "list:quests" }, { text: "🆘 সাপোর্ট ইনবক্স", callback_data: "list:support" }],
       [{ text: "👥 ইউজার লিস্ট", callback_data: "list:users" }, { text: "🚫 ব্যান/আনব্যান", callback_data: "admin:ban" }],
       [{ text: "🔢 BIN ম্যানেজমেন্ট", callback_data: "admin:bins" }, { text: "🇺🇸 USA এড্রেস", callback_data: "admin:us_addresses" }],
@@ -634,21 +634,40 @@ bot.on("message", async msg => {
         .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 5000));
     }
 
-    // --- Admin Set Price (Buy) ---
-    if (session?.step === "admin_set_price" && isAdmin(uid)) {
+    // --- Admin Set Buy Price ---
+    if (session?.step === "admin_set_buy_price" && isAdmin(uid)) {
       let price;
       if (text === "0") { price = 0; }
       else {
         price = parseMoney(text);
         if (!price) {
-          return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম লিখুন।</b> (0 দিলে রিকোয়েস্ট সিস্টেম চালু হবে)", { parse_mode: "HTML" })
+          return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম লিখুন।</b>", { parse_mode: "HTML" })
             .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
         }
       }
-      setSetting(`price_${session.coupon}`, price);
+      setSetting(`buy_price_${session.coupon}`, price);
       sessions.delete(uid);
-      logAdmin(`Updated $${session.coupon} coupon price to ${fmt(price)}`);
-      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের দাম সেট হয়েছে:</b> ${price > 0 ? fmt(price) : 'রিকোয়েস্ট মোড'}`, { parse_mode: "HTML" });
+      logAdmin(`Updated $${session.coupon} coupon buy price to ${fmt(price)}`);
+      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের কেনার দাম সেট হয়েছে:</b> ${fmt(price)}`, { parse_mode: "HTML" });
+      setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
+      return;
+    }
+
+    // --- Admin Set Sell Price ---
+    if (session?.step === "admin_set_sell_price" && isAdmin(uid)) {
+      let price;
+      if (text === "0") { price = 0; }
+      else {
+        price = parseMoney(text);
+        if (!price) {
+          return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম লিখুন।</b>", { parse_mode: "HTML" })
+            .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
+        }
+      }
+      setSetting(`sell_price_${session.coupon}`, price);
+      sessions.delete(uid);
+      logAdmin(`Updated $${session.coupon} coupon sell price to ${fmt(price)}`);
+      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের বিক্রির দাম সেট হয়েছে:</b> ${fmt(price)}`, { parse_mode: "HTML" });
       setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
       return;
     }
@@ -664,25 +683,6 @@ bot.on("message", async msg => {
       sessions.delete(uid);
       logAdmin(`Updated $${session.coupon} coupon stock to ${stock}`);
       const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের স্টক সেট হয়েছে:</b> ${stock}`, { parse_mode: "HTML" });
-      setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
-      return;
-    }
-
-    // --- Admin Set Sell Price ---
-    if (session?.step === "admin_set_sell_price" && isAdmin(uid)) {
-      let price;
-      if (text === "0") { price = 0; }
-      else {
-        price = parseMoney(text);
-        if (!price) {
-          return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম লিখুন।</b> (0 = কেনা বন্ধ)", { parse_mode: "HTML" })
-            .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000));
-        }
-      }
-      setSetting(`sell_price_${session.coupon}`, price);
-      sessions.delete(uid);
-      logAdmin(`Updated $${session.coupon} sell price to ${fmt(price)}`);
-      const successMsg = await bot.sendMessage(uid, `✅ <b>$${session.coupon} কুপনের কেনার রেট সেট হয়েছে:</b> ${price > 0 ? fmt(price) : 'বন্ধ'}`, { parse_mode: "HTML" });
       setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
       return;
     }
@@ -810,7 +810,7 @@ bot.on("callback_query", async query => {
       const btns = [];
       let row = [];
       coupons.forEach(c => {
-        if (getSetting(`buy_enabled_${c}`) === '1') {
+        if (getSetting(`buy_status_${c}`) === '1') {
           row.push({ text: `$${c}`, callback_data: `buy:coupon:${c}` });
           if (row.length === 2) { btns.push(row); row = []; }
         }
@@ -828,7 +828,7 @@ bot.on("callback_query", async query => {
       const btns = [];
       coupons.forEach(c => {
         const sp = Number(getSetting(`sell_price_${c}`));
-        if (getSetting(`sell_enabled_${c}`) === '1' && sp > 0) {
+        if (getSetting(`sell_status_${c}`) === '1' && sp > 0) {
           btns.push([{ text: `$${c} কুপন — রেট: ৳${(sp/100).toFixed(2)}`, callback_data: `sell:coupon:${c}` }]);
         }
       });
@@ -853,7 +853,7 @@ bot.on("callback_query", async query => {
     // === Buy Coupon ===
     if (data.startsWith("buy:coupon:")) {
       const coupon = Number(data.split(":")[2]);
-      const price = Number(getSetting(`price_${coupon}`)) || 0;
+      const price = Number(getSetting(`buy_price_${coupon}`)) || 0;
       
       sessions.set(uid, { step: "buy_qty", coupon: coupon, price: price });
       await answer(); deleteMsg();
@@ -875,30 +875,107 @@ bot.on("callback_query", async query => {
     // ==========================================
     if (!isAdmin(uid)) return answer("শুধু Admin", true);
 
+    // Coupon Control Menu
     if (data === "admin:coupon_control") {
       await answer(); deleteMsg();
       const btns = [4,5,10,20,25].map(c => {
-        const b = getSetting(`buy_enabled_${c}`) === '1' ? '✅' : '❌';
-        const s = getSetting(`sell_enabled_${c}`) === '1' ? '✅' : '❌';
-        return [{ text: `$${c} (কেনা: ${b}, বিক্রি: ${s})`, callback_data: `admin:toggle_coupon:${c}` }];
+        const b = getSetting(`buy_status_${c}`) === '1' ? '🟢' : '🔴';
+        const s = getSetting(`sell_status_${c}`) === '1' ? '🟢' : '🔴';
+        return [{ text: `🎮 $${c} | কেনা: ${b} | বিক্রি: ${s}`, callback_data: `admin:coupon_manage:${c}` }];
       });
       btns.push([{ text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]);
-      return bot.sendMessage(uid, "🎮 <b>কুপন কন্ট্রোল</b>\n\nযেকোনো কুপনে ক্লিক করে কেনা বা বিক্রি চালু/বন্ধ করুন।", { parse_mode: "HTML", reply_markup: { inline_keyboard: btns } });
+      return bot.sendMessage(uid, "🎮 <b>কুপন ম্যানেজমেন্ট</b>\n\n<i>যেকোনো কুপনে ক্লিক করে সেটি ম্যানেজ করুন।</i>", { parse_mode: "HTML", reply_markup: { inline_keyboard: btns } });
     }
-    if (data.startsWith("admin:toggle_coupon:")) {
+    
+    // Manage Specific Coupon
+    if (data.startsWith("admin:coupon_manage:")) {
       const c = Number(data.split(":")[2]);
-      const b = getSetting(`buy_enabled_${c}`) === '1' ? '0' : '1';
-      const s = getSetting(`sell_enabled_${c}`) === '1' ? '0' : '1';
-      setSetting(`buy_enabled_${c}`, b);
-      setSetting(`sell_enabled_${c}`, s);
-      await answer(`$${c} আপডেট হয়েছে`);
-      const btns = [4,5,10,20,25].map(cp => {
-        const b2 = getSetting(`buy_enabled_${cp}`) === '1' ? '✅' : '❌';
-        const s2 = getSetting(`sell_enabled_${cp}`) === '1' ? '✅' : '❌';
-        return [{ text: `$${cp} (কেনা: ${b2}, বিক্রি: ${s2})`, callback_data: `admin:toggle_coupon:${cp}` }];
+      const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
+      const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
+      const bPrice = getSetting(`buy_price_${c}`);
+      const sPrice = getSetting(`sell_price_${c}`);
+      
+      await answer(); deleteMsg();
+      return bot.sendMessage(uid, `🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n` +
+        `📥 <b>কেনা (Buy):</b> ${bStat}\n` +
+        `💵 <b>কেনার দাম:</b> <code>${bPrice > 0 ? fmt(bPrice) : 'সেট করা নেই'}</code>\n\n` +
+        `📤 <b>বিক্রি (Sell):</b> ${sStat}\n` +
+        `💰 <b>বিক্রির দাম:</b> <code>${sPrice > 0 ? fmt(sPrice) : 'সেট করা নেই'}</code>`, {
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [
+          [{ text: `📥 কেনা ${bStat}`, callback_data: `admin:toggle_buy:${c}` }, { text: "💵 কেনার দাম", callback_data: `admin:set_buy_price:${c}` }],
+          [{ text: `📤 বিক্রি ${sStat}`, callback_data: `admin:toggle_sell:${c}` }, { text: "💰 বিক্রির দাম", callback_data: `admin:set_sell_price:${c}` }],
+          [{ text: "🔙 পেছনে", callback_data: "admin:coupon_control" }]
+        ]}
       });
-      btns.push([{ text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]);
-      return bot.editMessageReplyMarkup({ inline_keyboard: btns }, { chat_id: chatId, message_id: msgId }).catch(() => {});
+    }
+    
+    // Toggle Buy Status
+    if (data.startsWith("admin:toggle_buy:")) {
+      const c = Number(data.split(":")[2]);
+      const current = getSetting(`buy_status_${c}`);
+      setSetting(`buy_status_${c}`, current === '1' ? '0' : '1');
+      await answer(current === '1' ? "কেনা বন্ধ করা হয়েছে" : "কেনা চালু করা হয়েছে");
+      // Refresh page
+      const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
+      const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
+      const bPrice = getSetting(`buy_price_${c}`);
+      const sPrice = getSetting(`sell_price_${c}`);
+      return bot.editMessageText(`🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n` +
+        `📥 <b>কেনা (Buy):</b> ${bStat}\n` +
+        `💵 <b>কেনার দাম:</b> <code>${bPrice > 0 ? fmt(bPrice) : 'সেট করা নেই'}</code>\n\n` +
+        `📤 <b>বিক্রি (Sell):</b> ${sStat}\n` +
+        `💰 <b>বিক্রির দাম:</b> <code>${sPrice > 0 ? fmt(sPrice) : 'সেট করা নেই'}</code>`, {
+        chat_id: chatId, message_id: msgId, parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [
+          [{ text: `📥 কেনা ${bStat}`, callback_data: `admin:toggle_buy:${c}` }, { text: "💵 কেনার দাম", callback_data: `admin:set_buy_price:${c}` }],
+          [{ text: `📤 বিক্রি ${sStat}`, callback_data: `admin:toggle_sell:${c}` }, { text: "💰 বিক্রির দাম", callback_data: `admin:set_sell_price:${c}` }],
+          [{ text: "🔙 পেছনে", callback_data: "admin:coupon_control" }]
+        ]}
+      }).catch(() => {});
+    }
+
+    // Toggle Sell Status
+    if (data.startsWith("admin:toggle_sell:")) {
+      const c = Number(data.split(":")[2]);
+      const current = getSetting(`sell_status_${c}`);
+      setSetting(`sell_status_${c}`, current === '1' ? '0' : '1');
+      await answer(current === '1' ? "বিক্রি বন্ধ করা হয়েছে" : "বিক্রি চালু করা হয়েছে");
+      // Refresh page
+      const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
+      const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
+      const bPrice = getSetting(`buy_price_${c}`);
+      const sPrice = getSetting(`sell_price_${c}`);
+      return bot.editMessageText(`🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n` +
+        `📥 <b>কেনা (Buy):</b> ${bStat}\n` +
+        `💵 <b>কেনার দাম:</b> <code>${bPrice > 0 ? fmt(bPrice) : 'সেট করা নেই'}</code>\n\n` +
+        `📤 <b>বিক্রি (Sell):</b> ${sStat}\n` +
+        `💰 <b>বিক্রির দাম:</b> <code>${sPrice > 0 ? fmt(sPrice) : 'সেট করা নেই'}</code>`, {
+        chat_id: chatId, message_id: msgId, parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [
+          [{ text: `📥 কেনা ${bStat}`, callback_data: `admin:toggle_buy:${c}` }, { text: "💵 কেনার দাম", callback_data: `admin:set_buy_price:${c}` }],
+          [{ text: `📤 বিক্রি ${sStat}`, callback_data: `admin:toggle_sell:${c}` }, { text: "💰 বিক্রির দাম", callback_data: `admin:set_sell_price:${c}` }],
+          [{ text: "🔙 পেছনে", callback_data: "admin:coupon_control" }]
+        ]}
+      }).catch(() => {});
+    }
+
+    // Set Buy Price Prompt
+    if (data.startsWith("admin:set_buy_price:")) {
+      const c = Number(data.split(":")[2]);
+      const pMsg = await bot.sendMessage(uid, `💵 <b>$${c} কুপনের নতুন কেনার দাম (BDT) লিখুন:</b>`, { parse_mode: "HTML" });
+      sessions.set(uid, { step: "admin_set_buy_price", coupon: c, lastPromptId: pMsg.message_id });
+      await answer(); deleteMsg();
+      return;
+    }
+
+    // Set Sell Price Prompt
+    if (data.startsWith("admin:set_sell_price:")) {
+      const c = Number(data.split(":")[2]);
+      const pMsg = await bot.sendMessage(uid, `💰 <b>$${c} কুপনের নতুন বিক্রির দাম (BDT) লিখুন:</b>`, { parse_mode: "HTML" });
+      sessions.set(uid, { step: "admin_set_sell_price", coupon: c, lastPromptId: pMsg.message_id });
+      await answer(); deleteMsg();
+      return;
     }
 
     if (data === "admin:ai_keys") {
@@ -944,7 +1021,7 @@ bot.on("callback_query", async query => {
     }
     if (data === "bin:add") {
       const pMsg = await bot.sendMessage(uid,
-        `➕ <b>নতুন BIN যুক্ত করুন</b>\n\nপ্রতি লাইনে একটি BIN:\n<code>BIN</code> অথবা <code>BIN | Bank | Country | Note</code>\n\n` +
+        `➕ <b>নতুন BIN যুক্ত করুন</b>\n\nপ্রতি লাইনে একটি BIN দিন:\n<code>BIN</code> অথবা <code>BIN | Bank | Country | Note</code>\n\n` +
         `উদাহরণ:\n<code>2345666</code>\n<code>246666 | Chase | US | Visa Signature</code>`,
         { parse_mode: "HTML" }
       );
@@ -1014,7 +1091,7 @@ bot.on("callback_query", async query => {
           const curStock = Number(getSetting(`stock_${s.coupon}`));
           setSetting(`stock_${s.coupon}`, curStock + s.qty);
         }
-        db.prepare("UPDATE sell_requests SET status=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(action === "approve" ? "APPROVED" : "REJECTED", uid, rid);
+        db.prepare("UPDATE sell_requests SET status=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(action === "approve" ? "APPROVED" : "REJECTED", uid, rid);
         return { s };
       })();
       if (res.err) return answer("রিভিউ করা হয়েছে", true);
@@ -1104,12 +1181,11 @@ bot.on("callback_query", async query => {
         const o = db.prepare("SELECT * FROM orders WHERE id=? AND status='PENDING'").get(rid);
         if (!o) return { err: 1 };
         if (action === "approve") {
-          db.prepare("UPDATE orders SET status='PROCESSING', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(uid, rid);
-          db.prepare("UPDATE prices SET status='ORDERED' WHERE id=?").run(o.price_id);
+          db.prepare("UPDATE orders SET status='PROCESSING', reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(rid);
         } else {
           const currentStock = Number(getSetting(`stock_${o.coupon}`));
           setSetting(`stock_${o.coupon}`, currentStock + (o.qty || 1));
-          db.prepare("UPDATE orders SET status='REJECTED', reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(uid, rid);
+          db.prepare("UPDATE orders SET status='REJECTED', reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(rid);
         }
         return { o };
       })();
@@ -1192,8 +1268,9 @@ bot.getMe().then(async (info) => {
   
   const adminMsg = `🚀 <b>বট সফলভাবে আপডেট হয়েছে!</b>\n\n` +
     `✨ <b>নতুন আপডেট:</b>\n` +
-    `• কুপন কেনা/বিক্রি এখন শুধু হোয়াটসঅ্যাপে হবে\n` +
-    `• টেলিগ্রাম আইডি সরিয়ে শুধু হোয়াটসঅ্যাপ রাখা হয়েছে\n\n` +
+    `• কুপন কেনা/বিক্রি আলাদাভাবে চালু/বন্ধ করার সুবিধা\n` +
+    `• কুপনের দাম আলাদাভাবে সেট করার সুবিধা\n` +
+    `• একসাথে একাধিক USA Address ও BIN যুক্ত করা যাবে\n\n` +
     `⏳ সমস্ত ইউজারকে নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000));
@@ -1201,7 +1278,8 @@ bot.getMe().then(async (info) => {
   const users = db.prepare("SELECT id FROM users").all();
   const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
     `✨ <b>নতুন সুবিধা:</b>\n` +
-    `• কুপন কিনতে বা বিক্রি করতে সরাসরি হোয়াটসঅ্যাপে মেসেজ দিন।\n\n` +
+    `• কুপন কেনা/বিক্রি এখন আরও সহজ।\n` +
+    `• অ্যাডমিন প্যানেল থেকে সবকিছু কন্ট্রোল করা যায়।\n\n` +
     `👇 <i>যেকোনো সমস্যায় 🚀 রিস্টার্ট বট চাপুন।</i>`;
 
   let count = 0;
