@@ -1,11 +1,12 @@
-// PLAY POINT QUEST HUB — Ultimate Final Code (Browser Integrated)
+// PLAY POINT QUEST HUB — 200MB RAM Optimized (Lightweight Web Scraper)
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const Database = require("better-sqlite3");
 const fs = require("fs");
 const path = require("path");
-const puppeteer = require("puppeteer");
+const axios = require("axios");
+const cheerio = require("cheerio");
 
 const { BOT_TOKEN, ADMIN_CHAT_ID, SUPPORT_USERNAME = "", BKASH_NUMBER = "", NAGAD_NUMBER = "", ADMIN_WHATSAPP = "" } = process.env;
 const ADMIN_ID = Number(ADMIN_CHAT_ID);
@@ -119,20 +120,13 @@ function parseSmartMoney(text) {
   let clean = toEnglishDigits(text).toLowerCase();
   clean = clean.replace(/(tk|taka|৳|\$|bdt)/gi, '');
   const wordMap = {
-    'zero': '0', 'shunno': '0', 'শূন্য': '0',
-    'one': '1', 'ek': '1', 'এক': '1',
-    'two': '2', 'dui': '2', 'দুই': '2',
-    'three': '3', 'tin': '3', 'তিন': '3',
-    'four': '4', 'char': '4', 'চার': '4',
-    'five': '5', 'panch': '5', 'পাঁচ': '5',
-    'six': '6', 'choy': '6', 'ছয়': '6',
-    'seven': '7', 'shat': '7', 'সাত': '7',
-    'eight': '8', 'aat': '8', 'আট': '8',
-    'nine': '9', 'noy': '9', 'নয়': '9',
-    'ten': '10', 'dosh': '10', 'দশ': '10',
-    'twenty': '20', 'bish': '20', 'বিশ': '20',
-    'fifty': '50', 'ponchash': '50', 'পঞ্চাশ': '50',
-    'hundred': '100', 'shoto': '100', 'শত': '100'
+    'zero': '0', 'shunno': '0', 'শূন্য': '0', 'one': '1', 'ek': '1', 'এক': '1',
+    'two': '2', 'dui': '2', 'দুই': '2', 'three': '3', 'tin': '3', 'তিন': '3',
+    'four': '4', 'char': '4', 'চার': '4', 'five': '5', 'panch': '5', 'পাঁচ': '5',
+    'six': '6', 'choy': '6', 'ছয়': '6', 'seven': '7', 'shat': '7', 'সাত': '7',
+    'eight': '8', 'aat': '8', 'আট': '8', 'nine': '9', 'noy': '9', 'নয়': '9',
+    'ten': '10', 'dosh': '10', 'দশ': '10', 'twenty': '20', 'bish': '20', 'বিশ': '20',
+    'fifty': '50', 'ponchash': '50', 'পঞ্চাশ': '50', 'hundred': '100', 'shoto': '100', 'শত': '100'
   };
   for (const [word, num] of Object.entries(wordMap)) clean = clean.split(word).join(num);
   const match = clean.match(/(\d+(\.\d{1,2})?)/);
@@ -222,84 +216,19 @@ function parseBinInput(text) {
   return { bin, mm, yy };
 }
 
-// ===== Browser Integration =====
-let sharedBrowser = null;
-const browserSessions = new Map();
+// ===== Lightweight Web Scraper (200MB RAM Compatible) =====
+const webSessions = new Map(); // uid -> { currentUrl }
 
-const BROWSER_HELP = `🌐 <b>ব্রাউজার কমান্ড</b>
+const WEB_HELP = `🌐 <b>লাইটওয়েট ওয়েব ব্রাউজার</b>
 ━━━━━━━━━━━━━━━━━━
-🔗 <b>শুধু লিংক দিন</b> → স্ক্রিনশট + টাইটেল
+আপনার সার্ভারে র‍্যাম কম (২০০MB), তাই স্ক্রিনশট নেওয়া সম্ভব নয়। তবে আপনি নিচের কাজগুলো করতে পারবেন:
 
-📸 /shot → বর্তমান স্ক্রিনশট
-📸 /full → সম্পূর্ণ পেজ স্ক্রিনশট
-📄 /text → পেজের সব লেখা
-📄 /html → HTML সোর্স
-📄 /pdf → পেজের PDF ফাইল
-🔗 /links → সব লিংক
-🔗 /url → বর্তমান URL
-⬅️ /back → পেছনের পেজ
-🔄 /reload → রিলোড
-⬇️ /scroll → নিচে স্ক্রল
-🖱️ /click &lt;selector&gt; → CSS দিয়ে ক্লিক
-🖱️ /clicktext &lt;লেখা&gt; → লেখা দিয়ে ক্লিক
-✏️ /fill &lt;selector&gt; | &lt;মান&gt; → ফর্ম পূরণ
-⌨️ /press &lt;key&gt; → কী চাপ (Enter/Tab/Escape)
-➡️ /goto &lt;url&gt; → নতুন লিংকে যাও
-❌ /close → ব্রাউজার বন্ধ
-
-<b>উদাহরণ:</b>
-<code>/click #login-btn</code>
-<code>/clicktext সাবমিট করুন</code>
-<code>/fill #email | user@example.com</code>
-<code>/press Enter</code>`;
-
-async function getBrowserInstance() {
-  if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
-  sharedBrowser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1280,800'
-    ]
-  });
-  return sharedBrowser;
-}
-
-async function getOrCreateBrowserPage(uid) {
-  let bs = browserSessions.get(uid);
-  if (bs && bs.page && !bs.page.isClosed()) { bs.lastActivity = Date.now(); return bs; }
-  if (bs) await closeBrowserSession(uid);
-  const browser = await getBrowserInstance();
-  const context = browser.createBrowserContext
-    ? await browser.createBrowserContext()
-    : await browser.createIncognitoBrowserContext();
-  const page = await context.newPage();
-  await page.setViewport({ width: 1280, height: 800 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-  page.setDefaultTimeout(30000);
-  page.setDefaultNavigationTimeout(30000);
-  bs = { context, page, lastActivity: Date.now() };
-  browserSessions.set(uid, bs);
-  return bs;
-}
-
-async function closeBrowserSession(uid) {
-  const bs = browserSessions.get(uid);
-  if (!bs) return;
-  browserSessions.delete(uid);
-  try { await bs.context.close(); } catch (e) {}
-}
-
-setInterval(async () => {
-  const now = Date.now();
-  for (const [uid, bs] of browserSessions.entries()) {
-    if (now - bs.lastActivity > 15 * 60 * 1000) await closeBrowserSession(uid);
-  }
-}, 5 * 60 * 1000);
+🔗 <b>শুধু লিংক দিন</b> → ওয়েবসাইট ভিজিট করবে
+📄 /text → পেজের সব লেখা দেখাবে
+📄 /html → পেজের HTML সোর্স কোড
+🔗 /links → পেজের সব লিংক দেখাবে
+🔗 /url → বর্তমানে কোন পেজে আছেন
+❌ /close → সেশন বন্ধ করুন`;
 
 function isSafeUrl(urlStr) {
   try {
@@ -307,11 +236,8 @@ function isSafeUrl(urlStr) {
     if (!['http:', 'https:'].includes(u.protocol)) return false;
     const host = u.hostname.toLowerCase();
     if (['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(host)) return false;
-    if (/^10\./.test(host)) return false;
-    if (/^192\.168\./.test(host)) return false;
+    if (/^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^127\./.test(host)) return false;
     if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
-    if (/^169\.254\./.test(host)) return false;
-    if (/^127\./.test(host)) return false;
     if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan')) return false;
     return true;
   } catch { return false; }
@@ -321,153 +247,105 @@ function looksLikeUrl(s) {
   return /^https?:\/\//i.test(s) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(s);
 }
 
-async function handleBrowserCommand(uid, rawText) {
+async function handleWebCommand(uid, rawText) {
   const text = rawText.trim();
   const lower = text.toLowerCase();
 
   if (lower === "/close" || lower === "/exit") {
-    await closeBrowserSession(uid);
+    webSessions.delete(uid);
     sessions.delete(uid);
-    return bot.sendMessage(uid, "✅ <b>ব্রাউজার বন্ধ হয়েছে।</b>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
+    return bot.sendMessage(uid, "✅ <b>ওয়েব সেশন বন্ধ হয়েছে।</b>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
   }
   if (lower === "/help") {
-    return bot.sendMessage(uid, BROWSER_HELP, { parse_mode: "HTML" }).catch(() => {});
+    return bot.sendMessage(uid, WEB_HELP, { parse_mode: "HTML" }).catch(() => {});
   }
 
-  let bs;
-  try { bs = await getOrCreateBrowserPage(uid); }
-  catch (err) {
-    logError(err);
-    return bot.sendMessage(uid, "❌ ব্রাউজার চালু করা যায়নি।", { parse_mode: "HTML" }).catch(() => {});
-  }
-  const { page } = bs;
+  let session = webSessions.get(uid) || { currentUrl: null };
 
   try {
+    // 1. New URL to visit
     if (looksLikeUrl(text) && !text.startsWith("/")) {
       let url = text;
       if (!/^https?:\/\//i.test(url)) url = "https://" + url;
       if (!isSafeUrl(url)) {
-        return bot.sendMessage(uid, "⚠️ এই লিংকে যাওয়া যাবে না (নিরাপত্তা কারণে)।", { parse_mode: "HTML" }).catch(() => {});
+        return bot.sendMessage(uid, "⚠️ নিরাপত্তার কারণে এই লিংকে যাওয়া যাবে না।", { parse_mode: "HTML" }).catch(() => {});
       }
-      const wait = await bot.sendMessage(uid, "⏳ পেজ লোড হচ্ছে...", { parse_mode: "HTML" }).catch(() => {});
+      
+      const waitMsg = await bot.sendMessage(uid, "⏳ পেজ লোড হচ্ছে...", { parse_mode: "HTML" }).catch(() => {});
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await new Promise(r => setTimeout(r, 1500));
-        const title = await page.title().catch(() => "");
-        const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-        if (wait) bot.deleteMessage(uid, wait.message_id).catch(() => {});
-        return bot.sendPhoto(uid, shot, {
-          caption: `🌐 <b>${esc(title || "শিরোনাম নেই")}</b>\n🔗 <code>${esc(page.url())}</code>`,
-          parse_mode: "HTML"
-        }).catch(() => {});
+        const res = await axios.get(url, { 
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          timeout: 15000 
+        });
+        const $ = cheerio.load(res.data);
+        const title = $('title').text().trim() || 'শিরোনাম নেই';
+        
+        session.currentUrl = url;
+        webSessions.set(uid, session);
+
+        if (waitMsg) bot.deleteMessage(uid, waitMsg.message_id).catch(() => {});
+        return bot.sendMessage(uid, `✅ <b>পেজ সফলভাবে লোড হয়েছে!</b>\n\n🌐 <b>টাইটেল:</b> ${esc(title)}\n🔗 <b>URL:</b> <code>${esc(url)}</code>\n\n<i>এখন /text, /html বা /links কমান্ড দিয়ে পেজটি ঘুরে দেখুন।</i>`, { parse_mode: "HTML" }).catch(() => {});
       } catch (err) {
-        logError(err);
-        if (wait) bot.deleteMessage(uid, wait.message_id).catch(() => {});
-        return bot.sendMessage(uid, "❌ পেজ লোড হয়নি। লিংক বা ইন্টারনেট চেক করুন।", { parse_mode: "HTML" }).catch(() => {});
+        if (waitMsg) bot.deleteMessage(uid, waitMsg.message_id).catch(() => {});
+        return bot.sendMessage(uid, "❌ পেজ লোড করা যায়নি। লিংক বা ইন্টারনেট চেক করুন।", { parse_mode: "HTML" }).catch(() => {});
       }
     }
 
-    if (lower === "/shot" || lower === "/screenshot") {
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `📸 ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
-    }
-    if (lower === "/full") {
-      const shot = await page.screenshot({ type: 'jpeg', quality: 60, fullPage: true });
-      return bot.sendPhoto(uid, shot, { caption: `📸 সম্পূর্ণ পেজ\n🔗 ${esc(page.url())}` }).catch(() => {});
-    }
-    if (lower === "/text") {
-      const t = await page.evaluate(() => document.body ? document.body.innerText : "");
-      const trimmed = (t || "").slice(0, 4000);
-      return bot.sendMessage(uid, `📄 <b>পেজের টেক্সট:</b>\n\n${esc(trimmed || "(খালি)")}`, { parse_mode: "HTML" }).catch(() => {});
-    }
-    if (lower === "/html") {
-      const t = (await page.content()).slice(0, 4000);
-      return bot.sendMessage(uid, `📄 <b>HTML:</b>\n\n<pre>${esc(t)}</pre>`, { parse_mode: "HTML" }).catch(() => {});
-    }
-    if (lower === "/links") {
-      const links = await page.evaluate(() => [...document.querySelectorAll('a[href]')].slice(0, 50).map(a => ({ text: (a.innerText||"").trim().slice(0,50), href: a.href })));
-      if (!links.length) return bot.sendMessage(uid, "কোনো লিংক নেই।").catch(() => {});
-      const lines = links.map((l, i) => `${i+1}. ${esc(l.text || "(শিরোনাম নেই)")}\n🔗 ${esc(l.href)}`);
-      return bot.sendMessage(uid, `🔗 <b>লিংক (${links.length}):</b>\n\n${lines.join("\n\n")}`, { parse_mode: "HTML" }).catch(() => {});
-    }
-    if (lower === "/back") {
-      await page.goBack({ timeout: 15000 }).catch(() => {});
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `⬅️ ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
-    }
-    if (lower === "/reload") {
-      await page.reload({ timeout: 20000 }).catch(() => {});
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `🔄 ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
-    }
-    if (lower === "/url") {
-      return bot.sendMessage(uid, `🔗 <code>${esc(page.url())}</code>`, { parse_mode: "HTML" }).catch(() => {});
-    }
-    if (lower === "/pdf") {
-      const pdf = await page.pdf({ format: 'A4', printBackground: true });
-      return bot.sendDocument(uid, pdf, { caption: `📄 ${esc(await page.title().catch(()=>""))}` }).catch(() => {});
-    }
-    if (lower === "/scroll") {
-      await page.evaluate(() => window.scrollBy(0, 500));
-      await new Promise(r => setTimeout(r, 500));
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `⬇️ স্ক্রল করা হয়েছে` }).catch(() => {});
-    }
-    if (lower.startsWith("/click ")) {
-      const sel = text.slice(7).trim();
-      if (!sel) return bot.sendMessage(uid, "ব্যবহার: <code>/click #btn-id</code>", { parse_mode: "HTML" }).catch(() => {});
-      await page.click(sel);
-      await new Promise(r => setTimeout(r, 800));
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `✅ ক্লিক সম্পন্ন\n🔗 ${esc(page.url())}` }).catch(() => {});
-    }
-    if (lower.startsWith("/clicktext ")) {
-      const txt = text.slice(11).trim();
-      const clicked = await page.evaluate((t) => {
-        const els = [...document.querySelectorAll('a,button')];
-        const target = els.find(e => (e.innerText||"").trim().toLowerCase() === t.toLowerCase())
-                    || els.find(e => (e.innerText||"").trim().toLowerCase().includes(t.toLowerCase()));
-        if (target) { target.click(); return true; }
-        return false;
-      }, txt);
-      if (!clicked) return bot.sendMessage(uid, "❌ এই লেখার কোনো বাটন/লিংক পাওয়া যায়নি।").catch(() => {});
-      await new Promise(r => setTimeout(r, 1500));
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `✅ "${esc(txt)}" এ ক্লিক হয়েছে\n🔗 ${esc(page.url())}` }).catch(() => {});
-    }
-    if (lower.startsWith("/fill ")) {
-      const rest = text.slice(6);
-      const parts = rest.split("|");
-      if (parts.length < 2) return bot.sendMessage(uid, "ব্যবহার: <code>/fill #username | myuser</code>", { parse_mode: "HTML" }).catch(() => {});
-      const sel = parts[0].trim();
-      const val = parts.slice(1).join("|").trim();
-      await page.evaluate((s) => { const el = document.querySelector(s); if (el) { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); } }, sel).catch(() => {});
-      await page.click(sel).catch(() => {});
-      await page.type(sel, val, { delay: 30 });
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `✅ ফিল্ড পূরণ হয়েছে` }).catch(() => {});
-    }
-    if (lower.startsWith("/press ")) {
-      const key = text.slice(7).trim();
-      await page.keyboard.press(key);
-      await new Promise(r => setTimeout(r, 800));
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `⌨️ "${esc(key)}" চাপা হয়েছে` }).catch(() => {});
-    }
-    if (lower.startsWith("/goto ")) {
-      let url = text.slice(6).trim();
-      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-      if (!isSafeUrl(url)) return bot.sendMessage(uid, "⚠️ অনিরাপদ লিংক").catch(() => {});
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await new Promise(r => setTimeout(r, 1000));
-      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
-      return bot.sendPhoto(uid, shot, { caption: `🌐 ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
+    // Require URL for other commands
+    if (!session.currentUrl) {
+      return bot.sendMessage(uid, "⚠️ আগে একটি ওয়েবসাইটের লিংক দিন।", { parse_mode: "HTML" }).catch(() => {});
     }
 
-    return bot.sendMessage(uid, BROWSER_HELP, { parse_mode: "HTML" }).catch(() => {});
-  } catch (err) {
-    logError(err);
-    return bot.sendMessage(uid, `❌ কমান্ড চলেনি: ${esc(err.message || "unknown")}`, { parse_mode: "HTML" }).catch(() => {});
+    const waitMsg = await bot.sendMessage(uid, "⏳ ডেটা প্রসেস হচ্ছে...", { parse_mode: "HTML" }).catch(() => {});
+    
+    try {
+      const res = await axios.get(session.currentUrl, { 
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        timeout: 15000 
+      });
+      const $ = cheerio.load(res.data);
+
+      if (waitMsg) bot.deleteMessage(uid, waitMsg.message_id).catch(() => {});
+
+      if (lower === "/text") {
+        const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+        const trimmed = bodyText.slice(0, 4000);
+        return bot.sendMessage(uid, `📄 <b>পেজের টেক্সট:</b>\n\n${esc(trimmed || "(খালি)")}`, { parse_mode: "HTML" }).catch(() => {});
+      }
+      
+      if (lower === "/html") {
+        const html = res.data.slice(0, 4000);
+        return bot.sendMessage(uid, `📄 <b>HTML সোর্স:</b>\n\n<pre>${esc(html)}</pre>`, { parse_mode: "HTML" }).catch(() => {});
+      }
+      
+      if (lower === "/links") {
+        const links = [];
+        $('a[href]').each((i, el) => {
+          if (links.length >= 40) return;
+          const href = $(el).attr('href');
+          const text = $(el).text().replace(/\s+/g, ' ').trim().slice(0, 50) || '(শিরোনাম নেই)';
+          if (href && !href.startsWith('javascript') && !href.startsWith('#')) {
+             let absUrl = href;
+             try { absUrl = new URL(href, session.currentUrl).href; } catch(e){}
+             links.push(`${links.length+1}. ${esc(text)}\n🔗 ${esc(absUrl)}`);
+          }
+        });
+        if (!links.length) return bot.sendMessage(uid, "❌ কোনো লিংক পাওয়া যায়নি।").catch(() => {});
+        return bot.sendMessage(uid, `🔗 <b>লিংক সমূহ:</b>\n\n${links.join("\n\n")}`, { parse_mode: "HTML", disable_web_page_preview: true }).catch(() => {});
+      }
+      
+      if (lower === "/url") {
+        return bot.sendMessage(uid, `🔗 <b>বর্তমান URL:</b>\n<code>${esc(session.currentUrl)}</code>`, { parse_mode: "HTML" }).catch(() => {});
+      }
+    } catch (err) {
+      if (waitMsg) bot.deleteMessage(uid, waitMsg.message_id).catch(() => {});
+      return bot.sendMessage(uid, "❌ ডেটা আনতে সমস্যা হচ্ছে।", { parse_mode: "HTML" }).catch(() => {});
+    }
+
+    return bot.sendMessage(uid, WEB_HELP, { parse_mode: "HTML" }).catch(() => {});
+  } catch (error) {
+    logError(error);
+    bot.sendMessage(uid, "❌ একটি সমস্যা হয়েছে।", { parse_mode: "HTML" }).catch(() => {});
   }
 }
 
@@ -493,7 +371,7 @@ const getHome = (uid) => {
     [{ text: "🔢 BIN নাম্বার" }, { text: "💳 কার্ড মেক" }],
     [{ text: "🇺🇸 USA এড্রেস" }, { text: "🤖 AI অ্যাসিস্ট্যান্ট" }],
     [{ text: "🎯 কুইস্ট কমপ্লিট" }, { text: "💬 সাপোর্ট" }],
-    [{ text: "🌐 ব্রাউজার" }, { text: "📞 হোয়াটসঅ্যাপ" }],
+    [{ text: "🌐 ওয়েব ব্রাউজার" }, { text: "📞 হোয়াটসঅ্যাপ" }],
     [{ text: "📖 নিয়মাবলী" }]
   ];
   if (isAdmin(uid)) keyboard.push([{ text: "🛠 অ্যাডমিন প্যানেল" }]);
@@ -502,7 +380,7 @@ const getHome = (uid) => {
 const MENU_BUTTONS = new Set([
   "🚀 রিস্টার্ট বট","🎮 কুপন সার্ভিস","🔢 BIN নাম্বার","💳 কার্ড মেক",
   "🇺🇸 USA এড্রেস","🤖 AI অ্যাসিস্ট্যান্ট","🎯 কুইস্ট কমপ্লিট","💬 সাপোর্ট",
-  "📞 হোয়াটসঅ্যাপ","📖 নিয়মাবলী","🛠 অ্যাডমিন প্যানেল","🌐 ব্রাউজার"
+  "📞 হোয়াটসঅ্যাপ","📖 নিয়মাবলী","🛠 অ্যাডমিন প্যানেল","🌐 ওয়েব ব্রাউজার"
 ]);
 
 function adminPanel(chatId) {
@@ -530,7 +408,7 @@ async function handleStart(msg) {
   if (user?.is_banned) return bot.sendMessage(uid, "🚫 আপনাকে বট থেকে ব্যান করা হয়েছে।").catch(() => {});
   ensureUser(msg.from);
   sessions.delete(uid);
-  closeBrowserSession(uid).catch(() => {});
+  webSessions.delete(uid);
   if (msg.message_id) bot.deleteMessage(uid, msg.message_id).catch(() => {});
 
   const startText = `🌟 <b>আসসালামু আলাইকুম, ${esc(msg.from.first_name || "বন্ধু")}!</b> 🌟\n\n` +
@@ -565,7 +443,7 @@ bot.onText(/^\/backup(@\w+)?$/, async msg => {
 bot.onText(/^\/cancel(@\w+)?$/, msg => {
   bot.deleteMessage(msg.from.id, msg.message_id).catch(() => {});
   sessions.delete(msg.from.id);
-  closeBrowserSession(msg.from.id).catch(() => {});
+  webSessions.delete(msg.from.id);
   bot.sendMessage(msg.from.id, "✅ <b>প্রক্রিয়াটি বাতিল হয়েছে।</b>", { parse_mode: "HTML", ...getHome(msg.from.id) })
     .then(m => setTimeout(() => bot.deleteMessage(msg.from.id, m.message_id).catch(() => {}), 3000)).catch(() => {});
 });
@@ -632,28 +510,25 @@ bot.on("message", async msg => {
       return handleStart(msg);
     }
 
-    const isBrowserMode = session?.step === "browser_mode";
+    const isWebMode = session?.step === "web_mode";
     const isBinFormat = /^\.gen\s+\d{4,15}([\s\/]+\d{1,2}([\s\/]+\d{2,4})?)?$/.test(text);
     const inCardMake = sessions.get(uid)?.step === "card_make_bin";
-    if (text.startsWith("/") && !isBrowserMode && !(isBinFormat && inCardMake)) return;
+    if (text.startsWith("/") && !isWebMode && !(isBinFormat && inCardMake)) return;
 
     if (!MENU_BUTTONS.has(rawText)) {
       bot.deleteMessage(uid, msg.message_id).catch(() => {});
     }
 
     if (MENU_BUTTONS.has(rawText)) {
-      const wasBrowser = session?.step === "browser_mode";
+      const wasWeb = session?.step === "web_mode";
       sessions.delete(uid);
-      if (wasBrowser) closeBrowserSession(uid).catch(() => {});
+      if (wasWeb) webSessions.delete(uid);
 
       if (rawText === "🛠 অ্যাডমিন প্যানেল") { if (isAdmin(uid)) return adminPanel(uid); return; }
 
-      if (rawText === "🌐 ব্রাউজার") {
-        if (browserSessions.size >= 5 && !browserSessions.has(uid)) {
-          return bot.sendMessage(uid, "⚠️ এখন অনেক ইউজার ব্রাউজার ব্যবহার করছে। কিছুক্ষণ পরে চেষ্টা করুন।", { parse_mode: "HTML" }).catch(() => {});
-        }
-        sessions.set(uid, { step: "browser_mode" });
-        return bot.sendMessage(uid, BROWSER_HELP, { parse_mode: "HTML" }).catch(() => {});
+      if (rawText === "🌐 ওয়েব ব্রাউজার") {
+        sessions.set(uid, { step: "web_mode" });
+        return bot.sendMessage(uid, WEB_HELP, { parse_mode: "HTML" }).catch(() => {});
       }
 
       if (rawText === "🎯 কুইস্ট কমপ্লিট") {
@@ -730,9 +605,9 @@ bot.on("message", async msg => {
       }
     }
 
-    // 🌐 Browser Mode Handler
-    if (session?.step === "browser_mode") {
-      return handleBrowserCommand(uid, rawText);
+    // 🌐 Web Mode Handler
+    if (session?.step === "web_mode") {
+      return handleWebCommand(uid, rawText);
     }
 
     // Fallback
@@ -1407,20 +1282,6 @@ bot.on("callback_query", async query => {
   } catch (error) { logError(error); answer("Error", true); }
 });
 
-// ===== Graceful Shutdown =====
-process.on('SIGINT', async () => {
-  console.log('Shutting down...');
-  for (const uid of browserSessions.keys()) await closeBrowserSession(uid);
-  if (sharedBrowser) await sharedBrowser.close().catch(() => {});
-  process.exit(0);
-});
-process.on('SIGTERM', async () => {
-  console.log('Shutting down...');
-  for (const uid of browserSessions.keys()) await closeBrowserSession(uid);
-  if (sharedBrowser) await sharedBrowser.close().catch(() => {});
-  process.exit(0);
-});
-
 // ===== Startup =====
 bot.on("polling_error", e => console.error("Polling error:", e?.message || e));
 
@@ -1428,7 +1289,7 @@ bot.getMe().then(async (info) => {
   console.log(`✅ BOT CONNECTED: @${info.username}`);
 
   const adminMsg = `🚀 <b>বট সফলভাবে চালু হয়েছে!</b>\n\n` +
-    `✨ <b>সব ফিচার + ব্রাউজার (🌐) একসাথে যুক্ত করা হয়েছে।</b>\n\n` +
+    `✨ <b>সব ফিচার + লাইটওয়েট ওয়েব ব্রাউজার যুক্ত করা হয়েছে।</b>\n\n` +
     `⏳ সমস্ত ইউজারকে নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000)).catch(() => {});
@@ -1436,8 +1297,8 @@ bot.getMe().then(async (info) => {
   const users = db.prepare("SELECT id FROM users").all();
   const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
     `✨ <b>নতুন সুবিধা:</b>\n` +
-    `• 🌐 ব্রাউজার ফিচার — লিংক দিলেই স্ক্রিনশট!\n` +
-    `• বট এখন আরও দ্রুত এবং নির্ভরযোগ্য।\n\n` +
+    `• 🌐 ওয়েব ব্রাউজার — লিংক দিলে সাইটের ডেটা/text বের করা যাবে!\n` +
+    `• বট এখন ২০০ এম্বি র‍্যামেও সুপারফাস্ট চলবে।\n\n` +
     `👇 <i>যেকোনো সমস্যায় 🚀 রিস্টার্ট বট চাপুন।</i>`;
 
   let count = 0;
