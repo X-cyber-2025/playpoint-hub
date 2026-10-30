@@ -1,10 +1,11 @@
-// PLAY POINT QUEST HUB — Ultimate Final Code (Custom Price Text)
+// PLAY POINT QUEST HUB — Ultimate Final Code (Browser Integrated)
 
 require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const Database = require("better-sqlite3");
 const fs = require("fs");
 const path = require("path");
+const puppeteer = require("puppeteer");
 
 const { BOT_TOKEN, ADMIN_CHAT_ID, SUPPORT_USERNAME = "", BKASH_NUMBER = "", NAGAD_NUMBER = "", ADMIN_WHATSAPP = "" } = process.env;
 const ADMIN_ID = Number(ADMIN_CHAT_ID);
@@ -108,18 +109,15 @@ const getSetting = key => db.prepare("SELECT value FROM settings WHERE key=?").g
 const setSetting = (key, value) => db.prepare("UPDATE settings SET value=? WHERE key=?").run(value, key);
 const logAdmin = (action) => db.prepare("INSERT INTO admin_logs(admin_id, action) VALUES(?,?)").run(ADMIN_ID, action);
 
-// বাংলা সংখ্যা থেকে ইংরেজি সংখ্যা
 function toEnglishDigits(str) {
   const bengali = ['০','১','২','৩','৪','৫','৬','৭','৮','৯'];
   const english = ['0','1','2','3','4','5','6','7','8','9'];
   return String(str).replace(/[০-৯]/g, d => english[bengali.indexOf(d)]);
 }
 
-// স্মার্ট নাম্বার এক্সট্রাক্টর
 function parseSmartMoney(text) {
   let clean = toEnglishDigits(text).toLowerCase();
   clean = clean.replace(/(tk|taka|৳|\$|bdt)/gi, '');
-
   const wordMap = {
     'zero': '0', 'shunno': '0', 'শূন্য': '0',
     'one': '1', 'ek': '1', 'এক': '1',
@@ -136,14 +134,9 @@ function parseSmartMoney(text) {
     'fifty': '50', 'ponchash': '50', 'পঞ্চাশ': '50',
     'hundred': '100', 'shoto': '100', 'শত': '100'
   };
-
-  for (const [word, num] of Object.entries(wordMap)) {
-    clean = clean.split(word).join(num);
-  }
-
+  for (const [word, num] of Object.entries(wordMap)) clean = clean.split(word).join(num);
   const match = clean.match(/(\d+(\.\d{1,2})?)/);
   if (!match) return null;
-
   const v = Number(match[0]);
   if (!Number.isFinite(v) || v <= 0 || v > 100000) return null;
   return toPaisa(v);
@@ -152,7 +145,6 @@ function parseSmartMoney(text) {
 function parseSmartInteger(text) {
   let clean = toEnglishDigits(text).toLowerCase();
   clean = clean.replace(/(tk|taka|৳|\$|bdt|pcs|pice|ta)/gi, '');
-  
   const wordMap = {
     'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
     'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
@@ -161,11 +153,7 @@ function parseSmartInteger(text) {
     'এক': '1', 'দুই': '2', 'তিন': '3', 'চার': '4', 'পাঁচ': '5',
     'ছয়': '6', 'সাত': '7', 'আট': '8', 'নয়': '9', 'দশ': '10'
   };
-
-  for (const [word, num] of Object.entries(wordMap)) {
-    clean = clean.split(word).join(num);
-  }
-
+  for (const [word, num] of Object.entries(wordMap)) clean = clean.split(word).join(num);
   const match = clean.match(/\d+/);
   if (!match) return null;
   return parseInt(match[0], 10);
@@ -182,7 +170,6 @@ async function safeNotify(chatId, text, options = {}) {
 function sendAdmin(text, reply_markup) {
   return safeNotify(ADMIN_ID, text, { parse_mode: "HTML", ...(reply_markup ? { reply_markup } : {}) });
 }
-
 async function sequentialDelete(chatId, msgIds, delay = 300) {
   if (!Array.isArray(msgIds)) msgIds = [msgIds];
   for (let i = 0; i < msgIds.length; i++) {
@@ -192,7 +179,6 @@ async function sequentialDelete(chatId, msgIds, delay = 300) {
     }
   }
 }
-
 async function editAndAutoDelete(chatId, messageId, newText, delayMs = 5000, editOptions = {}) {
   try { await bot.editMessageText(newText, { chat_id: chatId, message_id: messageId, parse_mode: "HTML", ...editOptions }); } catch (e) {}
   setTimeout(() => { bot.deleteMessage(chatId, messageId).catch(() => {}); }, delayMs);
@@ -236,6 +222,255 @@ function parseBinInput(text) {
   return { bin, mm, yy };
 }
 
+// ===== Browser Integration =====
+let sharedBrowser = null;
+const browserSessions = new Map();
+
+const BROWSER_HELP = `🌐 <b>ব্রাউজার কমান্ড</b>
+━━━━━━━━━━━━━━━━━━
+🔗 <b>শুধু লিংক দিন</b> → স্ক্রিনশট + টাইটেল
+
+📸 /shot → বর্তমান স্ক্রিনশট
+📸 /full → সম্পূর্ণ পেজ স্ক্রিনশট
+📄 /text → পেজের সব লেখা
+📄 /html → HTML সোর্স
+📄 /pdf → পেজের PDF ফাইল
+🔗 /links → সব লিংক
+🔗 /url → বর্তমান URL
+⬅️ /back → পেছনের পেজ
+🔄 /reload → রিলোড
+⬇️ /scroll → নিচে স্ক্রল
+🖱️ /click &lt;selector&gt; → CSS দিয়ে ক্লিক
+🖱️ /clicktext &lt;লেখা&gt; → লেখা দিয়ে ক্লিক
+✏️ /fill &lt;selector&gt; | &lt;মান&gt; → ফর্ম পূরণ
+⌨️ /press &lt;key&gt; → কী চাপ (Enter/Tab/Escape)
+➡️ /goto &lt;url&gt; → নতুন লিংকে যাও
+❌ /close → ব্রাউজার বন্ধ
+
+<b>উদাহরণ:</b>
+<code>/click #login-btn</code>
+<code>/clicktext সাবমিট করুন</code>
+<code>/fill #email | user@example.com</code>
+<code>/press Enter</code>`;
+
+async function getBrowserInstance() {
+  if (sharedBrowser && sharedBrowser.isConnected()) return sharedBrowser;
+  sharedBrowser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-blink-features=AutomationControlled',
+      '--window-size=1280,800'
+    ]
+  });
+  return sharedBrowser;
+}
+
+async function getOrCreateBrowserPage(uid) {
+  let bs = browserSessions.get(uid);
+  if (bs && bs.page && !bs.page.isClosed()) { bs.lastActivity = Date.now(); return bs; }
+  if (bs) await closeBrowserSession(uid);
+  const browser = await getBrowserInstance();
+  const context = browser.createBrowserContext
+    ? await browser.createBrowserContext()
+    : await browser.createIncognitoBrowserContext();
+  const page = await context.newPage();
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  page.setDefaultTimeout(30000);
+  page.setDefaultNavigationTimeout(30000);
+  bs = { context, page, lastActivity: Date.now() };
+  browserSessions.set(uid, bs);
+  return bs;
+}
+
+async function closeBrowserSession(uid) {
+  const bs = browserSessions.get(uid);
+  if (!bs) return;
+  browserSessions.delete(uid);
+  try { await bs.context.close(); } catch (e) {}
+}
+
+setInterval(async () => {
+  const now = Date.now();
+  for (const [uid, bs] of browserSessions.entries()) {
+    if (now - bs.lastActivity > 15 * 60 * 1000) await closeBrowserSession(uid);
+  }
+}, 5 * 60 * 1000);
+
+function isSafeUrl(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    if (!['http:', 'https:'].includes(u.protocol)) return false;
+    const host = u.hostname.toLowerCase();
+    if (['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(host)) return false;
+    if (/^10\./.test(host)) return false;
+    if (/^192\.168\./.test(host)) return false;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
+    if (/^169\.254\./.test(host)) return false;
+    if (/^127\./.test(host)) return false;
+    if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.lan')) return false;
+    return true;
+  } catch { return false; }
+}
+
+function looksLikeUrl(s) {
+  return /^https?:\/\//i.test(s) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(s);
+}
+
+async function handleBrowserCommand(uid, rawText) {
+  const text = rawText.trim();
+  const lower = text.toLowerCase();
+
+  if (lower === "/close" || lower === "/exit") {
+    await closeBrowserSession(uid);
+    sessions.delete(uid);
+    return bot.sendMessage(uid, "✅ <b>ব্রাউজার বন্ধ হয়েছে।</b>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
+  }
+  if (lower === "/help") {
+    return bot.sendMessage(uid, BROWSER_HELP, { parse_mode: "HTML" }).catch(() => {});
+  }
+
+  let bs;
+  try { bs = await getOrCreateBrowserPage(uid); }
+  catch (err) {
+    logError(err);
+    return bot.sendMessage(uid, "❌ ব্রাউজার চালু করা যায়নি।", { parse_mode: "HTML" }).catch(() => {});
+  }
+  const { page } = bs;
+
+  try {
+    if (looksLikeUrl(text) && !text.startsWith("/")) {
+      let url = text;
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+      if (!isSafeUrl(url)) {
+        return bot.sendMessage(uid, "⚠️ এই লিংকে যাওয়া যাবে না (নিরাপত্তা কারণে)।", { parse_mode: "HTML" }).catch(() => {});
+      }
+      const wait = await bot.sendMessage(uid, "⏳ পেজ লোড হচ্ছে...", { parse_mode: "HTML" }).catch(() => {});
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 1500));
+        const title = await page.title().catch(() => "");
+        const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+        if (wait) bot.deleteMessage(uid, wait.message_id).catch(() => {});
+        return bot.sendPhoto(uid, shot, {
+          caption: `🌐 <b>${esc(title || "শিরোনাম নেই")}</b>\n🔗 <code>${esc(page.url())}</code>`,
+          parse_mode: "HTML"
+        }).catch(() => {});
+      } catch (err) {
+        logError(err);
+        if (wait) bot.deleteMessage(uid, wait.message_id).catch(() => {});
+        return bot.sendMessage(uid, "❌ পেজ লোড হয়নি। লিংক বা ইন্টারনেট চেক করুন।", { parse_mode: "HTML" }).catch(() => {});
+      }
+    }
+
+    if (lower === "/shot" || lower === "/screenshot") {
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `📸 ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+    if (lower === "/full") {
+      const shot = await page.screenshot({ type: 'jpeg', quality: 60, fullPage: true });
+      return bot.sendPhoto(uid, shot, { caption: `📸 সম্পূর্ণ পেজ\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+    if (lower === "/text") {
+      const t = await page.evaluate(() => document.body ? document.body.innerText : "");
+      const trimmed = (t || "").slice(0, 4000);
+      return bot.sendMessage(uid, `📄 <b>পেজের টেক্সট:</b>\n\n${esc(trimmed || "(খালি)")}`, { parse_mode: "HTML" }).catch(() => {});
+    }
+    if (lower === "/html") {
+      const t = (await page.content()).slice(0, 4000);
+      return bot.sendMessage(uid, `📄 <b>HTML:</b>\n\n<pre>${esc(t)}</pre>`, { parse_mode: "HTML" }).catch(() => {});
+    }
+    if (lower === "/links") {
+      const links = await page.evaluate(() => [...document.querySelectorAll('a[href]')].slice(0, 50).map(a => ({ text: (a.innerText||"").trim().slice(0,50), href: a.href })));
+      if (!links.length) return bot.sendMessage(uid, "কোনো লিংক নেই।").catch(() => {});
+      const lines = links.map((l, i) => `${i+1}. ${esc(l.text || "(শিরোনাম নেই)")}\n🔗 ${esc(l.href)}`);
+      return bot.sendMessage(uid, `🔗 <b>লিংক (${links.length}):</b>\n\n${lines.join("\n\n")}`, { parse_mode: "HTML" }).catch(() => {});
+    }
+    if (lower === "/back") {
+      await page.goBack({ timeout: 15000 }).catch(() => {});
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `⬅️ ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+    if (lower === "/reload") {
+      await page.reload({ timeout: 20000 }).catch(() => {});
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `🔄 ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+    if (lower === "/url") {
+      return bot.sendMessage(uid, `🔗 <code>${esc(page.url())}</code>`, { parse_mode: "HTML" }).catch(() => {});
+    }
+    if (lower === "/pdf") {
+      const pdf = await page.pdf({ format: 'A4', printBackground: true });
+      return bot.sendDocument(uid, pdf, { caption: `📄 ${esc(await page.title().catch(()=>""))}` }).catch(() => {});
+    }
+    if (lower === "/scroll") {
+      await page.evaluate(() => window.scrollBy(0, 500));
+      await new Promise(r => setTimeout(r, 500));
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `⬇️ স্ক্রল করা হয়েছে` }).catch(() => {});
+    }
+    if (lower.startsWith("/click ")) {
+      const sel = text.slice(7).trim();
+      if (!sel) return bot.sendMessage(uid, "ব্যবহার: <code>/click #btn-id</code>", { parse_mode: "HTML" }).catch(() => {});
+      await page.click(sel);
+      await new Promise(r => setTimeout(r, 800));
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `✅ ক্লিক সম্পন্ন\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+    if (lower.startsWith("/clicktext ")) {
+      const txt = text.slice(11).trim();
+      const clicked = await page.evaluate((t) => {
+        const els = [...document.querySelectorAll('a,button')];
+        const target = els.find(e => (e.innerText||"").trim().toLowerCase() === t.toLowerCase())
+                    || els.find(e => (e.innerText||"").trim().toLowerCase().includes(t.toLowerCase()));
+        if (target) { target.click(); return true; }
+        return false;
+      }, txt);
+      if (!clicked) return bot.sendMessage(uid, "❌ এই লেখার কোনো বাটন/লিংক পাওয়া যায়নি।").catch(() => {});
+      await new Promise(r => setTimeout(r, 1500));
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `✅ "${esc(txt)}" এ ক্লিক হয়েছে\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+    if (lower.startsWith("/fill ")) {
+      const rest = text.slice(6);
+      const parts = rest.split("|");
+      if (parts.length < 2) return bot.sendMessage(uid, "ব্যবহার: <code>/fill #username | myuser</code>", { parse_mode: "HTML" }).catch(() => {});
+      const sel = parts[0].trim();
+      const val = parts.slice(1).join("|").trim();
+      await page.evaluate((s) => { const el = document.querySelector(s); if (el) { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); } }, sel).catch(() => {});
+      await page.click(sel).catch(() => {});
+      await page.type(sel, val, { delay: 30 });
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `✅ ফিল্ড পূরণ হয়েছে` }).catch(() => {});
+    }
+    if (lower.startsWith("/press ")) {
+      const key = text.slice(7).trim();
+      await page.keyboard.press(key);
+      await new Promise(r => setTimeout(r, 800));
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `⌨️ "${esc(key)}" চাপা হয়েছে` }).catch(() => {});
+    }
+    if (lower.startsWith("/goto ")) {
+      let url = text.slice(6).trim();
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+      if (!isSafeUrl(url)) return bot.sendMessage(uid, "⚠️ অনিরাপদ লিংক").catch(() => {});
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await new Promise(r => setTimeout(r, 1000));
+      const shot = await page.screenshot({ type: 'jpeg', quality: 75 });
+      return bot.sendPhoto(uid, shot, { caption: `🌐 ${esc(await page.title().catch(()=>""))}\n🔗 ${esc(page.url())}` }).catch(() => {});
+    }
+
+    return bot.sendMessage(uid, BROWSER_HELP, { parse_mode: "HTML" }).catch(() => {});
+  } catch (err) {
+    logError(err);
+    return bot.sendMessage(uid, `❌ কমান্ড চলেনি: ${esc(err.message || "unknown")}`, { parse_mode: "HTML" }).catch(() => {});
+  }
+}
+
 // ===== Force Join =====
 async function checkMembership(userId) {
   if (isAdmin(userId)) return true;
@@ -258,12 +493,17 @@ const getHome = (uid) => {
     [{ text: "🔢 BIN নাম্বার" }, { text: "💳 কার্ড মেক" }],
     [{ text: "🇺🇸 USA এড্রেস" }, { text: "🤖 AI অ্যাসিস্ট্যান্ট" }],
     [{ text: "🎯 কুইস্ট কমপ্লিট" }, { text: "💬 সাপোর্ট" }],
-    [{ text: "📞 হোয়াটসঅ্যাপ" }, { text: "📖 নিয়মাবলী" }]
+    [{ text: "🌐 ব্রাউজার" }, { text: "📞 হোয়াটসঅ্যাপ" }],
+    [{ text: "📖 নিয়মাবলী" }]
   ];
   if (isAdmin(uid)) keyboard.push([{ text: "🛠 অ্যাডমিন প্যানেল" }]);
   return { reply_markup: { keyboard, resize_keyboard: true } };
 };
-const MENU_BUTTONS = new Set(["🚀 রিস্টার্ট বট","🎮 কুপন সার্ভিস","🔢 BIN নাম্বার","💳 কার্ড মেক","🇺🇸 USA এড্রেস","🤖 AI অ্যাসিস্ট্যান্ট","🎯 কুইস্ট কমপ্লিট","💬 সাপোর্ট","📞 হোয়াটসঅ্যাপ","📖 নিয়মাবলী","🛠 অ্যাডমিন প্যানেল"]);
+const MENU_BUTTONS = new Set([
+  "🚀 রিস্টার্ট বট","🎮 কুপন সার্ভিস","🔢 BIN নাম্বার","💳 কার্ড মেক",
+  "🇺🇸 USA এড্রেস","🤖 AI অ্যাসিস্ট্যান্ট","🎯 কুইস্ট কমপ্লিট","💬 সাপোর্ট",
+  "📞 হোয়াটসঅ্যাপ","📖 নিয়মাবলী","🛠 অ্যাডমিন প্যানেল","🌐 ব্রাউজার"
+]);
 
 function adminPanel(chatId) {
   return bot.sendMessage(chatId, "🛠 <b>অ্যাডমিন কন্ট্রোল প্যানেল</b>\n\n━━━━━━━━━━━━━━━━━━\n<i>আপনি নিচের অপশনগুলো থেকে যেকোনো কিছু ম্যানেজ করতে পারেন।</i>", {
@@ -286,13 +526,11 @@ async function handleStart(msg) {
   if (!msg.from?.id) return;
   const uid = msg.from.id;
   if (!(await checkMembership(uid))) return sendJoinPrompt(uid);
-  
   const user = db.prepare("SELECT is_banned FROM users WHERE id=?").get(uid);
   if (user?.is_banned) return bot.sendMessage(uid, "🚫 আপনাকে বট থেকে ব্যান করা হয়েছে।").catch(() => {});
-
   ensureUser(msg.from);
   sessions.delete(uid);
-  
+  closeBrowserSession(uid).catch(() => {});
   if (msg.message_id) bot.deleteMessage(uid, msg.message_id).catch(() => {});
 
   const startText = `🌟 <b>আসসালামু আলাইকুম, ${esc(msg.from.first_name || "বন্ধু")}!</b> 🌟\n\n` +
@@ -327,6 +565,7 @@ bot.onText(/^\/backup(@\w+)?$/, async msg => {
 bot.onText(/^\/cancel(@\w+)?$/, msg => {
   bot.deleteMessage(msg.from.id, msg.message_id).catch(() => {});
   sessions.delete(msg.from.id);
+  closeBrowserSession(msg.from.id).catch(() => {});
   bot.sendMessage(msg.from.id, "✅ <b>প্রক্রিয়াটি বাতিল হয়েছে।</b>", { parse_mode: "HTML", ...getHome(msg.from.id) })
     .then(m => setTimeout(() => bot.deleteMessage(msg.from.id, m.message_id).catch(() => {}), 3000)).catch(() => {});
 });
@@ -340,10 +579,8 @@ bot.on("message", async msg => {
 
   try {
     if (!(await checkMembership(uid))) return sendJoinPrompt(uid);
-    
     const dbUser = db.prepare("SELECT is_banned FROM users WHERE id=?").get(uid);
     if (dbUser?.is_banned && !isAdmin(uid)) return bot.sendMessage(uid, "🚫 আপনাকে ব্যান করা হয়েছে।").catch(() => {});
-    
     ensureUser(msg.from);
     const session = sessions.get(uid);
 
@@ -351,17 +588,11 @@ bot.on("message", async msg => {
     if (rawText.startsWith("/broadcast ") && isAdmin(uid)) {
       const bMsg = rawText.slice(11);
       if (!bMsg) return bot.sendMessage(uid, "⚠️ মেসেজটি খালি। ব্যবহার: <code>/broadcast আপনার মেসেজ</code>", { parse_mode: "HTML" }).catch(() => {});
-      
       const users = db.prepare("SELECT id FROM users WHERE is_banned=0").all();
       const notif = await bot.sendMessage(uid, `⏳ <b>${users.length} জন ইউজারকে মেসেজ পাঠানো হচ্ছে...</b>`, { parse_mode: "HTML" }).catch(() => {});
-      
       let count = 0;
       for (const u of users) {
-        try {
-          await bot.sendMessage(u.id, bMsg, { parse_mode: "HTML", ...getHome(u.id) });
-          count++;
-          await new Promise(r => setTimeout(r, 50));
-        } catch (e) {}
+        try { await bot.sendMessage(u.id, bMsg, { parse_mode: "HTML", ...getHome(u.id) }); count++; await new Promise(r => setTimeout(r, 50)); } catch (e) {}
       }
       if (notif) bot.deleteMessage(uid, notif.message_id).catch(() => {});
       return bot.sendMessage(uid, `✅ <b>সফলভাবে ${count} জনকে মেসেজ পাঠানো হয়েছে।</b>`, { parse_mode: "HTML" }).catch(() => {});
@@ -401,17 +632,30 @@ bot.on("message", async msg => {
       return handleStart(msg);
     }
 
+    const isBrowserMode = session?.step === "browser_mode";
     const isBinFormat = /^\.gen\s+\d{4,15}([\s\/]+\d{1,2}([\s\/]+\d{2,4})?)?$/.test(text);
     const inCardMake = sessions.get(uid)?.step === "card_make_bin";
-    if (text.startsWith("/") && !(isBinFormat && inCardMake)) return;
+    if (text.startsWith("/") && !isBrowserMode && !(isBinFormat && inCardMake)) return;
 
     if (!MENU_BUTTONS.has(rawText)) {
       bot.deleteMessage(uid, msg.message_id).catch(() => {});
     }
 
     if (MENU_BUTTONS.has(rawText)) {
+      const wasBrowser = session?.step === "browser_mode";
       sessions.delete(uid);
+      if (wasBrowser) closeBrowserSession(uid).catch(() => {});
+
       if (rawText === "🛠 অ্যাডমিন প্যানেল") { if (isAdmin(uid)) return adminPanel(uid); return; }
+
+      if (rawText === "🌐 ব্রাউজার") {
+        if (browserSessions.size >= 5 && !browserSessions.has(uid)) {
+          return bot.sendMessage(uid, "⚠️ এখন অনেক ইউজার ব্রাউজার ব্যবহার করছে। কিছুক্ষণ পরে চেষ্টা করুন।", { parse_mode: "HTML" }).catch(() => {});
+        }
+        sessions.set(uid, { step: "browser_mode" });
+        return bot.sendMessage(uid, BROWSER_HELP, { parse_mode: "HTML" }).catch(() => {});
+      }
+
       if (rawText === "🎯 কুইস্ট কমপ্লিট") {
         sessions.set(uid, { step: "quest_screenshot" });
         return bot.sendMessage(uid, "🎯 <b>কুইস্ট কমপ্লিট</b>\n\nকুইস্ট সম্পন্ন করতে ১০৳ ফি দিতে হবে।\n\n📸 অ্যাডমিনের নম্বরে ১০৳ পাঠিয়ে পেমেন্টের স্ক্রিনশট এখানে পাঠান।\n\n❌ <i>বাতিল করতে /cancel লিখুন।</i>", { parse_mode: "HTML" }).catch(() => {});
@@ -481,9 +725,14 @@ bot.on("message", async msg => {
         sessions.set(uid, { step: "support_msg" });
         return bot.sendMessage(uid, `💬 <b>সাপোর্ট সেন্টার</b>\n\n${getSetting('support_text')}\n\n<i>আপনার সমস্যা বিস্তারিত লিখে বা ছবি পাঠিয়ে দিন (বাতিল: /cancel)।</i>`, { parse_mode: "HTML" }).catch(() => {});
       }
-      if (rawText === "📖 নিয়মাবলী") {
+      if (rawText === "📖 নিয়মাবলী") {
         return bot.sendMessage(uid, getSetting('rules_text'), { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
       }
+    }
+
+    // 🌐 Browser Mode Handler
+    if (session?.step === "browser_mode") {
+      return handleBrowserCommand(uid, rawText);
     }
 
     // Fallback
@@ -551,7 +800,7 @@ bot.on("message", async msg => {
 
     // Buy Flow
     if (session?.step === "buy_qty") {
-      const qty = parseSmartInteger(text); 
+      const qty = parseSmartInteger(text);
       if (!qty || qty <= 0 || qty > 100) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন</b> (যেমন: 1, 2, 5)।", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -561,19 +810,17 @@ bot.on("message", async msg => {
       const waText = encodeURIComponent(`আসসালামু আলাইকুম, আমি ${qty}টি $${c} কুপন কিনতে চাই। (মোট দাম: ৳${total/100})`);
       const waUrl = ADMIN_WHATSAPP ? `https://wa.me/${ADMIN_WHATSAPP.replace(/[^0-9]/g, '')}?text=${waText}` : null;
       sessions.delete(uid);
-      
       const msgText = `🛒 <b>কুপন কেনার বিবরণ</b>\n\n🎮 <b>কুপন:</b> $${c}\n📦 <b>পরিমাণ:</b> ${qty} টি\n💵 <b>মোট দাম:</b> <code>${fmt(total)}</code>\n\n👇 <b>কুপন কিনতে নিচের হোয়াটসঅ্যাপ বাটনে ক্লিক করে অ্যাডমিনকে মেসেজ দিন:</b>`;
       const inlineBtns = [];
       if (waUrl) inlineBtns.push([{ text: "📞 হোয়াটসঅ্যাপে মেসেজ দিন", url: waUrl }]);
       else inlineBtns.push([{ text: "⚠️ হোয়াটসঅ্যাপ নম্বর সেট করা নেই", callback_data: "msg:delete" }]);
       inlineBtns.push([{ text: "✅ হ্যাঁ, মেসেজ পাঠিয়েছি", callback_data: "msg:sent" }, { text: "🔙 মেইন মেনু", callback_data: "main_menu" }]);
-      
       return bot.sendMessage(uid, msgText, { parse_mode: "HTML", disable_web_page_preview: true, reply_markup: { inline_keyboard: inlineBtns } }).catch(() => {});
     }
 
     // Sell Flow
     if (session?.step === "sell_qty") {
-      const qty = parseSmartInteger(text); 
+      const qty = parseSmartInteger(text);
       if (!qty || qty <= 0 || qty > 1000) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন</b> (যেমন: 1, 2, 5)।", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -594,17 +841,14 @@ bot.on("message", async msg => {
       const total = session.sellPrice * session.qty;
       const waText = encodeURIComponent(`আসসালামু আলাইকুম, আমি ${session.qty}টি $${session.coupon} কুপন বিক্রি করতে চাই।\n\nGmail: ${session.gmail}\nPass: ${pass}\nমোট পাবো: ৳${total/100}`);
       const waUrl = ADMIN_WHATSAPP ? `https://wa.me/${ADMIN_WHATSAPP.replace(/[^0-9]/g, '')}?text=${waText}` : null;
-      
       const sellRes = db.prepare("INSERT INTO sell_requests(uid, coupon, qty, amount, gmail, password) VALUES(?,?,?,?,?,?)")
         .run(uid, session.coupon, session.qty, total, session.gmail, pass);
       sessions.delete(uid);
-      
       const msgText = `💰 <b>কুপন বিক্রির বিবরণ</b>\n\n🎮 <b>কুপন:</b> $${session.coupon} (${session.qty} টি)\n💵 <b>পাবেন:</b> <code>${fmt(total)}</code>\n\n👇 <b>কুপন বিক্রি করতে নিচের হোয়াটসঅ্যাপ বাটনে ক্লিক করে অ্যাডমিনকে মেসেজ দিন:</b>`;
       const inlineBtns = [];
       if (waUrl) inlineBtns.push([{ text: "📞 হোয়াটসঅ্যাপে মেসেজ দিন", url: waUrl }]);
       else inlineBtns.push([{ text: "⚠️ হোয়াটসঅ্যাপ নম্বর সেট করা নেই", callback_data: "msg:delete" }]);
       inlineBtns.push([{ text: "✅ হ্যাঁ, মেসেজ পাঠিয়েছি", callback_data: "msg:sent" }, { text: "🔙 মেইন মেনু", callback_data: "main_menu" }]);
-      
       sendAdmin(`💰 <b>নতুন কুপন বিক্রির রিকোয়েস্ট</b>\n👤 ইউজার: <code>${uid}</code>\n\n🎮 কুপন: $${session.coupon} × ${session.qty}\n💵 পেমেন্ট: <b>${fmt(total)}</b>\n\n📧 <b>Gmail:</b> <code>${esc(session.gmail)}</code>\n🔑 <b>Pass:</b> <code>${esc(pass)}</code>`, {
         inline_keyboard: [[{ text: "✅ অ্যাপ্রুভ", callback_data: `sell:approve:${sellRes.lastInsertRowid}` }, { text: "❌ রিজেক্ট", callback_data: `sell:reject:${sellRes.lastInsertRowid}` }], [{ text: "🗑 ডিলিট", callback_data: "msg:delete" }]]
       });
@@ -674,12 +918,12 @@ bot.on("message", async msg => {
 
     // Admin Set Buy Price
     if (session?.step === "admin_set_buy_price" && isAdmin(uid)) {
-      const priceText = rawText.trim(); // যেই লেখা দিবে তাই সেভ হবে
+      const priceText = rawText.trim();
       if (!priceText) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম বা লেখা দিন।</b>", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
       }
-      const numericPrice = parseSmartMoney(text) || 0; // হিসাবের জন্য নাম্বার আলাদা করে রাখা
+      const numericPrice = parseSmartMoney(text) || 0;
       setSetting(`buy_price_${session.coupon}`, priceText);
       setSetting(`buy_price_val_${session.coupon}`, numericPrice);
       sessions.delete(uid);
@@ -691,7 +935,7 @@ bot.on("message", async msg => {
 
     // Admin Set Sell Price
     if (session?.step === "admin_set_sell_price" && isAdmin(uid)) {
-      const priceText = rawText.trim(); // যেই লেখা দিবে তাই সেভ হবে
+      const priceText = rawText.trim();
       if (!priceText) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক দাম বা লেখা দিন।</b>", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -708,7 +952,7 @@ bot.on("message", async msg => {
 
     // Admin Set Stock
     if (session?.step === "admin_set_stock" && isAdmin(uid)) {
-      const stock = parseSmartInteger(text); 
+      const stock = parseSmartInteger(text);
       if (stock === null || stock < 0) {
         return bot.sendMessage(uid, "⚠️ <b>সঠিক সংখ্যা লিখুন।</b>", { parse_mode: "HTML" })
           .then(m => setTimeout(() => bot.deleteMessage(uid, m.message_id).catch(() => {}), 3000)).catch(() => {});
@@ -758,10 +1002,10 @@ bot.on("message", async msg => {
       return;
     }
 
-    // Admin Edit Texts (রুলস ও সাপোর্ট)
+    // Admin Edit Texts
     if (session?.step === "admin_text_rules" && isAdmin(uid)) {
       setSetting("rules_text", rawText); sessions.delete(uid);
-      const successMsg = await bot.sendMessage(uid, "✅ <b>নিয়মাবলী আপডেট হয়েছে।</b>", { parse_mode: "HTML" }).catch(() => {});
+      const successMsg = await bot.sendMessage(uid, "✅ <b>নিয়মাবলী আপডেট হয়েছে।</b>", { parse_mode: "HTML" }).catch(() => {});
       if (successMsg) setTimeout(() => sequentialDelete(uid, [successMsg.message_id, session.lastPromptId, msg.message_id], 300), 1000);
       return;
     }
@@ -819,9 +1063,9 @@ bot.on("callback_query", async query => {
     }
 
     if (data === "check_join") {
-      if (await checkMembership(uid)) { 
-        await answer("✅ ধন্যবাদ!"); 
-        return bot.sendMessage(uid, "✨ <b>স্বাগতম!</b>\n\n<i>আপনি এখন বটের সমস্ত ফিচার ব্যবহার করতে পারবেন।</i>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {}); 
+      if (await checkMembership(uid)) {
+        await answer("✅ ধন্যবাদ!");
+        return bot.sendMessage(uid, "✨ <b>স্বাগতম!</b>\n\n<i>আপনি এখন বটের সমস্ত ফিচার ব্যবহার করতে পারবেন।</i>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
       }
       return answer("❌ আপনি জয়েন করেননি।", true);
     }
@@ -842,7 +1086,6 @@ bot.on("callback_query", async query => {
       });
       if (row.length > 0) btns.push(row);
       btns.push([{ text: "🔙 মেইন মেনু", callback_data: "main_menu" }, { text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]);
-      
       await answer(); deleteMsg();
       if (btns.length === 1) return bot.sendMessage(uid, "😔 <b>বর্তমানে কোনো কুপন কেনা যাচ্ছে না।</b>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
       return bot.sendMessage(uid, "🛒 <b>আপনার পছন্দের কুপন নির্বাচন করুন:</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: btns } }).catch(() => {});
@@ -857,7 +1100,6 @@ bot.on("callback_query", async query => {
         }
       });
       btns.push([{ text: "🔙 মেইন মেনু", callback_data: "main_menu" }, { text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]);
-      
       await answer(); deleteMsg();
       if (btns.length === 1) return bot.sendMessage(uid, "😔 <b>এই মুহূর্তে কোনো কুপন কেনা হচ্ছে না।</b>", { parse_mode: "HTML", ...getHome(uid) }).catch(() => {});
       return bot.sendMessage(uid, "💰 <b>কোন কুপন বিক্রি করতে চান?</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: btns } }).catch(() => {});
@@ -893,9 +1135,7 @@ bot.on("callback_query", async query => {
       return bot.sendMessage(uid, `💰 <b>$${c} কুপন বিক্রি</b>\n\nপ্রতি কুপনের রেট: <b>${spText}</b>\n\n<i>কতটি বিক্রি করতে চান? (শুধু সংখ্যা লিখুন)</i>`, { parse_mode: "HTML" }).catch(() => {});
     }
 
-    // ==========================================
     // ADMIN CALLBACKS
-    // ==========================================
     if (!isAdmin(uid)) return answer("শুধু Admin", true);
 
     if (data === "admin:backup") {
@@ -915,14 +1155,13 @@ bot.on("callback_query", async query => {
       btns.push([{ text: "🔙 মেইন মেনু", callback_data: "main_menu" }, { text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]);
       return bot.sendMessage(uid, "🎮 <b>কুপন ম্যানেজমেন্ট</b>\n\n<i>যেকোনো কুপনে ক্লিক করে সেটি ম্যানেজ করুন।</i>", { parse_mode: "HTML", reply_markup: { inline_keyboard: btns } }).catch(() => {});
     }
-    
+
     if (data.startsWith("admin:coupon_manage:")) {
       const c = Number(data.split(":")[2]);
       const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const bPrice = getSetting(`buy_price_${c}`) || '0';
       const sPrice = getSetting(`sell_price_${c}`) || '0';
-      
       await answer(); deleteMsg();
       return bot.sendMessage(uid, `🎮 <b>$${c} কুপন ম্যানেজমেন্ট</b>\n\n📥 <b>কেনা (Buy):</b> ${bStat}\n💵 <b>কেনার দাম:</b> <code>${bPrice}</code>\n\n📤 <b>বিক্রি (Sell):</b> ${sStat}\n💰 <b>বিক্রির দাম:</b> <code>${sPrice}</code>`, {
         parse_mode: "HTML",
@@ -933,13 +1172,12 @@ bot.on("callback_query", async query => {
         ]}
       }).catch(() => {});
     }
-    
+
     if (data.startsWith("admin:toggle_buy:")) {
       const c = Number(data.split(":")[2]);
       const current = getSetting(`buy_status_${c}`);
       setSetting(`buy_status_${c}`, current === '1' ? '0' : '1');
       await answer(current === '1' ? "কেনা বন্ধ করা হয়েছে" : "কেনা চালু করা হয়েছে");
-      
       const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const bPrice = getSetting(`buy_price_${c}`) || '0';
@@ -959,7 +1197,6 @@ bot.on("callback_query", async query => {
       const current = getSetting(`sell_status_${c}`);
       setSetting(`sell_status_${c}`, current === '1' ? '0' : '1');
       await answer(current === '1' ? "বিক্রি বন্ধ করা হয়েছে" : "বিক্রি চালু করা হয়েছে");
-      
       const bStat = getSetting(`buy_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const sStat = getSetting(`sell_status_${c}`) === '1' ? '🟢 চালু' : '🔴 বন্ধ';
       const bPrice = getSetting(`buy_price_${c}`) || '0';
@@ -1051,7 +1288,7 @@ bot.on("callback_query", async query => {
       if (res.err) return answer("রিভিউ করা হয়েছে", true);
       await answer("সম্পন্ন"); logAdmin(`Sell #${rid} ${action}`);
       editAndAutoDelete(chatId, msgId, action === "approve" ? `✅ <b>Sell #${rid} অ্যাপ্রুভড</b>` : `❌ <b>Sell #${rid} রিজেক্টেড</b>`);
-      safeNotify(res.s.uid, action === "approve" ? `✅ <b>আপনার কুপন বিক্রির রিকোয়েস্ট অ্যাপ্রুভড।</b>\n\n💵 এডমিন আপনার দেওয়া নাম্বারে <b>৳${(res.s.amount/100).toFixed(2)}</b> পাঠিয়ে দিবে।` : `❌ <b>আপনার কুপন বিক্রির রিকোয়েস্ট রিজেক্টেড।</b>`, { parse_mode: "HTML", ...getHome(res.s.uid) });
+      safeNotify(res.s.uid, action === "approve" ? `✅ <b>আপনার কুপন বিক্রির রিকোয়েস্ট অ্যাপ্রুভড।</b>\n\n💵 এডমিন আপনার দেওয়া নাম্বারে <b>৳${(res.s.amount/100).toFixed(2)}</b> পাঠিয়ে দিবে।` : `❌ <b>আপনার কুপন বিক্রির রিকোয়েস্ট রিজেক্টেড।</b>`, { parse_mode: "HTML", ...getHome(res.s.uid) });
       return;
     }
 
@@ -1072,8 +1309,8 @@ bot.on("callback_query", async query => {
       return bot.sendMessage(uid, txt, { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]] } }).catch(() => {});
     }
     if (data === "admin:ban") { const pMsg = await bot.sendMessage(uid, "যে ইউজারকে ব্যান/আনব্যান করবেন তার Telegram ID দিন:", { parse_mode: "HTML" }).catch(() => {}); if (pMsg) sessions.set(uid, { step: "admin_ban_uid", lastPromptId: pMsg.message_id }); await answer(); deleteMsg(); return; }
-    if (data === "admin:texts") { await answer(); deleteMsg(); return bot.sendMessage(uid, "📝 <b>কোন টেক্সট এডিট করবেন?</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "📖 নিয়মাবলী", callback_data: "admin:text:rules" }], [{ text: "💬 সাপোর্ট", callback_data: "admin:text:support" }], [{ text: "🔙 মেইন মেনু", callback_data: "main_menu" }, { text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]] } }).catch(() => {}); }
-    if (data === "admin:text:rules") { const pMsg = await bot.sendMessage(uid, "নতুন নিয়মাবলী লিখুন:").catch(() => {}); if (pMsg) sessions.set(uid, { step: "admin_text_rules", lastPromptId: pMsg.message_id }); await answer(); deleteMsg(); return; }
+    if (data === "admin:texts") { await answer(); deleteMsg(); return bot.sendMessage(uid, "📝 <b>কোন টেক্সট এডিট করবেন?</b>", { parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "📖 নিয়মাবলী", callback_data: "admin:text:rules" }], [{ text: "💬 সাপোর্ট", callback_data: "admin:text:support" }], [{ text: "🔙 মেইন মেনু", callback_data: "main_menu" }, { text: "❌ বন্ধ করুন", callback_data: "msg:delete" }]] } }).catch(() => {}); }
+    if (data === "admin:text:rules") { const pMsg = await bot.sendMessage(uid, "নতুন নিয়মাবলী লিখুন:").catch(() => {}); if (pMsg) sessions.set(uid, { step: "admin_text_rules", lastPromptId: pMsg.message_id }); await answer(); deleteMsg(); return; }
     if (data === "admin:text:support") { const pMsg = await bot.sendMessage(uid, "নতুন সাপোর্ট টেক্সট লিখুন:").catch(() => {}); if (pMsg) sessions.set(uid, { step: "admin_text_support", lastPromptId: pMsg.message_id }); await answer(); deleteMsg(); return; }
 
     if (data === "list:logs") {
@@ -1107,7 +1344,7 @@ bot.on("callback_query", async query => {
       const res = db.transaction(() => {
         const o = db.prepare("SELECT * FROM orders WHERE id=? AND status='PENDING'").get(rid);
         if (!o) return { err: 1 };
-        if (action === "approve") { db.prepare("UPDATE orders SET status='PROCESSING', reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(rid); } 
+        if (action === "approve") { db.prepare("UPDATE orders SET status='PROCESSING', reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(rid); }
         else { const currentStock = Number(getSetting(`stock_${o.coupon}`)); setSetting(`stock_${o.coupon}`, currentStock + (o.qty || 1)); db.prepare("UPDATE orders SET status='REJECTED', reviewed_at=CURRENT_TIMESTAMP WHERE id=?").run(rid); }
         return { o };
       })();
@@ -1170,31 +1407,46 @@ bot.on("callback_query", async query => {
   } catch (error) { logError(error); answer("Error", true); }
 });
 
+// ===== Graceful Shutdown =====
+process.on('SIGINT', async () => {
+  console.log('Shutting down...');
+  for (const uid of browserSessions.keys()) await closeBrowserSession(uid);
+  if (sharedBrowser) await sharedBrowser.close().catch(() => {});
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  console.log('Shutting down...');
+  for (const uid of browserSessions.keys()) await closeBrowserSession(uid);
+  if (sharedBrowser) await sharedBrowser.close().catch(() => {});
+  process.exit(0);
+});
+
 // ===== Startup =====
 bot.on("polling_error", e => console.error("Polling error:", e?.message || e));
 
 bot.getMe().then(async (info) => {
   console.log(`✅ BOT CONNECTED: @${info.username}`);
-  
+
   const adminMsg = `🚀 <b>বট সফলভাবে চালু হয়েছে!</b>\n\n` +
-    `✨ <b>সব ফিচার (১-১০২) একসাথে যুক্ত করা হয়েছে।</b>\n\n` +
+    `✨ <b>সব ফিচার + ব্রাউজার (🌐) একসাথে যুক্ত করা হয়েছে।</b>\n\n` +
     `⏳ সমস্ত ইউজারকে নোটিফিকেশন পাঠানো হচ্ছে...`;
 
   bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: "HTML" }).then(m => setTimeout(() => bot.deleteMessage(ADMIN_ID, m.message_id).catch(() => {}), 15000)).catch(() => {});
 
   const users = db.prepare("SELECT id FROM users").all();
-  const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
+  const updateMsg = `🌟 <b>বট নতুন আপডেট পেয়েছে!</b> 🌟\n\n` +
     `✨ <b>নতুন সুবিধা:</b>\n` +
+    `• 🌐 ব্রাউজার ফিচার — লিংক দিলেই স্ক্রিনশট!\n` +
     `• বট এখন আরও দ্রুত এবং নির্ভরযোগ্য।\n\n` +
-    `👇 <i>যেকোনো সমস্যায় 🚀 রিস্টার্ট বট চাপুন।</i>`;
+    `👇 <i>যেকোনো সমস্যায় 🚀 রিস্টার্ট বট চাপুন।</i>`;
 
   let count = 0;
   for (const u of users) {
     try {
       await bot.sendMessage(u.id, updateMsg, { parse_mode: "HTML", ...getHome(u.id) });
       count++;
-      await new Promise(r => setTimeout(r, 40)); 
-    } catch (e) {} 
+      await new Promise(r => setTimeout(r, 40));
+    } catch (e) {}
   }
   console.log(`✅ Broadcast sent to ${count} users.`);
 });
